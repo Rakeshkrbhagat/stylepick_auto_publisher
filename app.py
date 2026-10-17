@@ -37,6 +37,8 @@ from src.meta_errors import MetaError, MetaTokenExpiredError, MetaUnsupportedCon
 from src.meta_graph import GraphClient  # noqa: E402
 from src.mock_data import SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT, SAMPLE_GEMINI_URL  # noqa: E402
 from src.models import PUBLISHABLE_PLATFORMS, Platform, Status  # noqa: E402
+from src.publishing_service import MockPublisher  # noqa: E402
+from src.redaction import redact  # noqa: E402
 from src.publishing_coordinator import ACTIVE, PublishingCoordinator, restore_status, summarize  # noqa: E402
 from src import scheduling  # noqa: E402
 from src.ui.schedule_panel import (  # noqa: E402
