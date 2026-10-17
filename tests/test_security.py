@@ -1,168 +1,163 @@
 """Credential storage, redaction, least-privilege and re-authorization tests."""
-        assert not re.search(r"(^|/)(\.env|client_secret.*\.json|token.*\.json)$", line), line
-    for line in out.splitlines():
-        pytest.skip("git not available")
-    except (OSError, subprocess.SubprocessError):
-                             timeout=10).stdout
-        out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True,
-    try:
-def test_no_secret_files_tracked():
-
-
-        assert not pattern.search(f.read_text()), f
-    for f in list((ROOT / "src").rglob("*.py")) + [ROOT / "app.py"]:
-    pattern = re.compile(r"EAA[A-Za-z0-9]{20,}|ya29\.[A-Za-z0-9_\-]{10,}|GOCSPX-[A-Za-z0-9_\-]{10,}")
-def test_no_hardcoded_secrets_in_source():
-
-
-        assert pat in gi
-    for pat in (".env", "credentials/", "client_secret*.json", "token*.json", "data/"):
-    gi = (ROOT / ".gitignore").read_text()
-def test_gitignore_covers_secrets():
-# ---------- source control hygiene ----------
-
-
-    assert ("DELETE", "me/permissions") in graph.calls
-    assert not m.is_connected()
-    m.disconnect()
-    assert m.is_connected() and m.needs_reauth()
-    m.mark_needs_reauth("expired")
-    m._save({"user_token": "EAAtoken"})
-    m = MetaAuthManager("1", "s", graph, store=MetaTokenStore(MemoryKeyring()))
-    graph = FakeGraph()
-def test_meta_reauth_flag_and_disconnect():
-
-
-    assert mgr.store.load() is None
-        mgr.get_credentials()
-    with pytest.raises(AuthExpiredError):
-    mgr.store.save('{"scopes": ["https://www.googleapis.com/auth/drive"], "token": "t"}')
-    mgr = GoogleAuthManager(tmp_path / "c.json", store=TokenStore(kr))
-    kr = MemoryKeyring()
-def test_google_invalid_stored_token_forces_reauth(tmp_path):
-
-
-    assert mgr.store.load() is None
-    mgr.disconnect()
-    monkeypatch.setattr(requests, "post", lambda *a, **k: None)
-    import requests
-    mgr.store.save('{"token": "x"}')
-        mgr.get_credentials()
-    with pytest.raises(NotConnectedError):
-    mgr = GoogleAuthManager(tmp_path / "missing.json", store=TokenStore(kr))
-    kr = MemoryKeyring()
-def test_google_not_connected_and_disconnect(tmp_path, monkeypatch):
-# ---------- disconnect & re-authorization ----------
-
-
-    assert "TOPSECRET" not in repr(m)
-    m = MetaAuthManager("1", "TOPSECRET", FakeGraph(), store=MetaTokenStore(MemoryKeyring()))
-def test_meta_repr_hides_secret():
-
-
-    assert "pages_manage_posts" in fb
-    assert not any(s.startswith("instagram") for s in fb)
-    fb = scopes_for(["facebook"])
-def test_meta_scopes_limited_to_enabled_platforms():
-
-
-    assert SCOPES == ["https://www.googleapis.com/auth/drive.readonly"]
-def test_google_scope_is_readonly():
-# ---------- least privilege ----------
-
-
-    assert "SECRET123456" not in caplog.text
-        logging.getLogger("x").info("calling %s", "url?access_token=SECRET123456")
-    with caplog.at_level(logging.INFO):
-    install_log_redaction()
-def test_log_records_are_redacted(caplog):
-
-
-        assert secret not in out
-    for secret in ("EAAabcdef", "1//0abc", "ya29.a0", "GOCSPX-", "abcdefghijklmnopqrstuv"):
-    assert "***" in out
-    out = redact(text)
-def test_redact_masks_secrets(text):
-])
-    "app token 1234567890|abcdefghijklmnopqrstuv",
-    "client_secret=GOCSPX-abcdefghijklmnop",
-    "Authorization: Bearer ya29.a0AfH6SMBabcdefgh",
-    '{"refresh_token": "1//0abcdefghijklmnopqrstuvwxyz"}',
-    "https://graph.facebook.com/me?access_token=EAAabcdefghijklmnopqrstuvwxyz123",
-@pytest.mark.parametrize("text", [
-# ---------- redaction ----------
-
-
-    assert s.get() is None
-    assert s.load() == {}
-    s.set("{not json")
-    s = JsonSecureStore("j", backend=kr)
-    kr = MemoryKeyring()
-def test_corrupt_json_entry_is_removed():
-
-
-        SecureStore("k", backend=PlaintextKeyring()).set("secret")
-    with pytest.raises(CredentialStoreError):
-def test_insecure_backend_refused():
-
-
-    s.delete()  # idempotent
-    assert s.get() is None
-    s.delete()
-    assert s.get() == "value"
-    s.set("value")
-    s = SecureStore("k", backend=kr)
-    kr = MemoryKeyring()
-def test_secure_store_roundtrip_and_delete():
-# ---------- secure storage ----------
-
-
-        return {}
-        self.calls.append((method, path))
-    def request(self, method, path, token=None, **kw):
-
-        self.calls = []
-    def __init__(self):
-
-    version = "v23.0"
-class FakeGraph:
-
-
-    pass
-class PlaintextKeyring(MemoryKeyring):
-
-
-        del self.data[(s, k)]
-    def delete_password(self, s, k):
-
-        self.data[(s, k)] = v
-    def set_password(self, s, k, v):
-
-        return self.data.get((s, k))
-    def get_password(self, s, k):
-
-        self.data = {}
-    def __init__(self):
-
-    """Stand-in for a secure OS keyring backend."""
-class MemoryKeyring:
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-from src.secure_store import CredentialStoreError, JsonSecureStore, SecureStore
-from src.redaction import install_log_redaction, redact
-from src.meta_auth import MetaAuthManager, MetaTokenStore, scopes_for
-from src.google_auth import SCOPES, GoogleAuthManager, TokenStore
-from src.drive_errors import AuthExpiredError, NotConnectedError
-
-import pytest
-
-from pathlib import Path
-import subprocess
-import re
-import logging
 
 from __future__ import annotations
 
+import logging
+import re
+import subprocess
+from pathlib import Path
 
+import pytest
+
+from src.drive_errors import AuthExpiredError, NotConnectedError
+from src.google_auth import SCOPES, GoogleAuthManager, TokenStore
+from src.meta_auth import MetaAuthManager, MetaTokenStore, scopes_for
+from src.redaction import install_log_redaction, redact
+from src.secure_store import CredentialStoreError, JsonSecureStore, SecureStore
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class MemoryKeyring:
+    """Stand-in for a secure OS keyring backend."""
+
+    def __init__(self):
+        self.data = {}
+
+    def get_password(self, s, k):
+        return self.data.get((s, k))
+
+    def set_password(self, s, k, v):
+        self.data[(s, k)] = v
+
+    def delete_password(self, s, k):
+        del self.data[(s, k)]
+
+
+class PlaintextKeyring(MemoryKeyring):
+    pass
+
+
+class FakeGraph:
+    version = "v23.0"
+
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, path, token=None, **kw):
+        self.calls.append((method, path))
+        return {}
+
+
+# ---------- secure storage ----------
+def test_secure_store_roundtrip_and_delete():
+    s = SecureStore("k", backend=MemoryKeyring())
+    s.set("value")
+    assert s.get() == "value"
+    s.delete()
+    assert s.get() is None
+    s.delete()  # idempotent
+
+
+def test_insecure_backend_refused():
+    with pytest.raises(CredentialStoreError):
+        SecureStore("k", backend=PlaintextKeyring()).set("secret")
+
+
+def test_corrupt_json_entry_is_removed():
+    s = JsonSecureStore("j", backend=MemoryKeyring())
+    s.set("{not json")
+    assert s.load() == {}
+    assert s.get() is None
+
+
+# ---------- redaction ----------
+@pytest.mark.parametrize("text", [
+    "https://graph.facebook.com/me?access_token=EAAabcdefghijklmnopqrstuvwxyz123",
+    '{"refresh_token": "1//0abcdefghijklmnopqrstuvwxyz"}',
+    "Authorization: Bearer ya29.a0AfH6SMBabcdefgh",
+    "client_secret=GOCSPX-abcdefghijklmnop",
+    "app token 1234567890|abcdefghijklmnopqrstuv",
+])
+def test_redact_masks_secrets(text):
+    out = redact(text)
+    assert "***" in out
+    for secret in ("EAAabcdef", "1//0abc", "ya29.a0", "GOCSPX-", "abcdefghijklmnopqrstuv"):
+        assert secret not in out
+
+
+def test_log_records_are_redacted(caplog):
+    install_log_redaction()
+    with caplog.at_level(logging.INFO):
+        logging.getLogger("x").info("calling %s", "url?access_token=SECRET123456")
+    assert "SECRET123456" not in caplog.text
+
+
+# ---------- least privilege ----------
+def test_google_scope_is_readonly():
+    assert SCOPES == ["https://www.googleapis.com/auth/drive.readonly"]
+
+
+def test_meta_scopes_limited_to_enabled_platforms():
+    fb = scopes_for(["facebook"])
+    assert not any(s.startswith("instagram") for s in fb)
+    assert "pages_manage_posts" in fb
+
+
+def test_meta_repr_hides_secret():
+    m = MetaAuthManager("1", "TOPSECRET", FakeGraph(), store=MetaTokenStore(MemoryKeyring()))
+    assert "TOPSECRET" not in repr(m)
+
+
+# ---------- disconnect & re-authorization ----------
+def test_google_not_connected_and_disconnect(tmp_path, monkeypatch):
+    mgr = GoogleAuthManager(tmp_path / "missing.json", store=TokenStore(MemoryKeyring()))
+    with pytest.raises(NotConnectedError):
+        mgr.get_credentials()
+    mgr.store.save('{"token": "x"}')
+    import requests
+    monkeypatch.setattr(requests, "post", lambda *a, **k: None)
+    mgr.disconnect()
+    assert mgr.store.load() is None
+
+
+def test_google_invalid_stored_token_forces_reauth(tmp_path):
+    mgr = GoogleAuthManager(tmp_path / "c.json", store=TokenStore(MemoryKeyring()))
+    mgr.store.save('{"scopes": ["https://www.googleapis.com/auth/drive"], "token": "t"}')
+    with pytest.raises(AuthExpiredError):
+        mgr.get_credentials()
+    assert mgr.store.load() is None
+
+
+def test_meta_reauth_flag_and_disconnect():
+    graph = FakeGraph()
+    m = MetaAuthManager("1", "s", graph, store=MetaTokenStore(MemoryKeyring()))
+    m._save({"user_token": "EAAtoken"})
+    m.mark_needs_reauth("expired")
+    assert m.is_connected() and m.needs_reauth()
+    m.disconnect()
+    assert not m.is_connected()
+    assert ("DELETE", "me/permissions") in graph.calls
+
+
+# ---------- source control hygiene ----------
+def test_gitignore_covers_secrets():
+    gi = (ROOT / ".gitignore").read_text()
+    for pat in (".env", "credentials/", "client_secret*.json", "token*.json", "data/"):
+        assert pat in gi
+
+
+def test_no_hardcoded_secrets_in_source():
+    pattern = re.compile(r"EAA[A-Za-z0-9]{20,}|ya29\.[A-Za-z0-9_\-]{10,}|GOCSPX-[A-Za-z0-9_\-]{10,}")
+    for f in list((ROOT / "src").rglob("*.py")) + [ROOT / "app.py"]:
+        assert not pattern.search(f.read_text(encoding="utf-8")), f
+
+
+def test_no_secret_files_tracked():
+    try:
+        out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True,
+                             timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git not available")
+    for line in out.splitlines():
+        assert not re.search(r"(^|/)(\.env|client_secret.*\.json|token.*\.json)$", line), line

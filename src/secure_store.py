@@ -141,4 +141,3 @@ def _cli(argv: list[str]) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(_cli(sys.argv[1:]))
-
