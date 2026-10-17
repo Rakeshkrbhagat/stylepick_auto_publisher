@@ -157,12 +157,110 @@ def edit_proposal(p: ScheduleProposal, new_proposed: datetime | None = None,
         p.status, p.message = PROPOSED, ""
 
 
-def approve(p: ScheduleProposal) -> None:
+def approve(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
     """Explicit user confirmation – the only way a proposal becomes submittable."""
-    if p.submitted:
+    if p.submitted or p.status == SKIPPED:
         return
     p.status = APPROVED
     p.confirmed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if audit:
+        audit.record(p, "approved")
+
+
+def skip(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
+    """Exclude from submission. Skipped proposals are never submitted."""
+    if p.submitted:
+        raise ValueError("Already submitted – change it on the platform instead.")
+    p.status, p.message = SKIPPED, "Skipped by user – nothing will be submitted."
+    if audit:
+        audit.record(p, "skipped")
+
+
+def unskip(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
+    if p.status == SKIPPED:
+        p.status, p.message = PROPOSED, ""
+        if audit:
+            audit.record(p, "unskipped")
+
+
+def can_retry(p: ScheduleProposal) -> bool:
+    return p.status in (FAILED, UNSUPPORTED)
+
+
+def retry(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
+    """Return a failed/unsupported proposal to review; it must be approved again."""
+    if not can_retry(p):
+        return
+    p.status, p.message, p.confirmed_at = PROPOSED, "", ""
+    if audit:
+        audit.record(p, "retry_requested")
+
+
+class AuditLog:
+    """Append-only JSON-lines record of approvals, skips and actions taken."""
+
+    def __init__(self, path: Path | str):
+        self.path = Path(path)
+
+    def record(self, p: ScheduleProposal, event: str) -> dict:
+        import json
+        entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
+                 "video_id": p.video_id, "filename": p.filename, "platform": p.platform.value,
+                 "mode": p.mode, "original": p.original.isoformat(),
+                 "proposed": p.proposed.isoformat(), "status": p.status,
+                 "message": p.message, "remote_id": p.remote_id, "caption": p.caption}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass  # auditing must never block or trigger a platform action
+        p.history.append(f"{entry['at']} {event}")
+        return entry
+
+    def entries(self) -> list[dict]:
+        import json
+        if not self.path.exists():
+            return []
+        out = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out
+
+
+def review_row(rec, proposals: dict) -> dict:
+    """One read-only review row per video (no platform action)."""
+    from src.matching import response_number, trailing_number
+    ig, fb = proposals.get(Platform.INSTAGRAM.value), proposals.get(Platform.FACEBOOK.value)
+    ref = ig or fb
+
+    def body(platform):
+        c = rec.content.get(platform)
+        return (c.caption or c.description) if c else ""
+
+    def tags(platform):
+        c = rec.content.get(platform)
+        return c.hashtags if c else ""
+
+    def status(p):
+        return p.status if p else ("skipped" if rec.skipped else "no schedule")
+
+    return {
+        "Drive filename": rec.filename,
+        "Trailing #": trailing_number(rec.filename),
+        "Gemini #": response_number(rec.content_key),
+        "Instagram caption": body(Platform.INSTAGRAM),
+        "Instagram hashtags": tags(Platform.INSTAGRAM),
+        "Facebook description": body(Platform.FACEBOOK),
+        "Facebook hashtags": tags(Platform.FACEBOOK),
+        "Original": fmt(ref.original) if ref else "—",
+        "Proposed": fmt(ref.proposed) if ref else "—",
+        "Instagram status": status(ig),
+        "Facebook status": status(fb),
+    }
 
 
 # ------------------------------------------------------------------ platform schedulers
