@@ -1,0 +1,10 @@
+streamlit>=1.39,<2.0
+pandas>=2.0
+python-dotenv>=1.0,<2.0
+requests>=2.32,<3.0
+keyring>=25.0,<26.0
+google-auth>=2.30,<3.0
+google-auth-oauthlib>=1.2,<2.0
+google-api-python-client>=2.130,<3.0
+pytest>=8.0
+
