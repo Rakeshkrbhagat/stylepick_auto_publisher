@@ -32,22 +32,38 @@ def render_schedule_table(proposals: list[ScheduleProposal]) -> None:
     } for p in proposals], hide_index=True, use_container_width=True)
 
 
-def render_proposal_editor(p: ScheduleProposal, platform_note: str = "") -> dict | None:
-    """Edit one proposal. Returns {'proposed', 'mode', 'approve'} on submit, else None."""
+def render_review_table(rows: list[dict]) -> None:
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def render_proposal_editor(p: ScheduleProposal, platform_note: str = "", body: str = "",
+                           hashtags: str = "") -> dict | None:
+    """Edit one proposal; no platform call happens here. Returns an action dict or None.
+
+    'action' in {save, approve, skip, unskip, retry}; save/approve also carry
+    'proposed', 'mode', 'body', 'hashtags'."""
     key = f"sch_{p.video_id}_{p.platform.value}"
+    label = "caption" if p.platform.value == "Instagram" else "description"
     st.markdown(f"**{p.platform.value} – {p.filename}** · {STATUS_ICON.get(p.status, p.status)}")
     if platform_note:
         st.caption(platform_note)
     c1, c2 = st.columns(2)
     c1.markdown(f"Original: **{fmt(p.original)}**")
     c2.markdown(f"Proposed: **{fmt(p.proposed)}**" + (" (edited)" if p.edited else ""))
-    st.text_area("Final caption + hashtags (edit in section 3)", p.caption, height=140,
-                 disabled=True, key=f"{key}_cap")
     if p.message:
-        (st.success if p.status in (SCHEDULED, DRAFT_SAVED) else st.warning)(p.message)
+        (st.success if p.status in (SCHEDULED, DRAFT_SAVED) else
+         st.error if p.status == FAILED else st.warning)(p.message)
     if p.submitted:
+        st.text_area("Submitted text", p.caption, height=120, disabled=True, key=f"{key}_cap")
         return None
+    if p.status == SKIPPED:
+        return {"action": "unskip"} if st.button("↩️ Un-skip", key=f"{key}_unskip") else None
+    if can_retry(p) and st.button("🔁 Retry (back to review – approve again to submit)",
+                                  key=f"{key}_retry"):
+        return {"action": "retry"}
     with st.form(f"{key}_form"):
+        new_body = st.text_area(f"{p.platform.value} {label}", body, height=120, key=f"{key}_b")
+        new_tags = st.text_input("Hashtags", hashtags, key=f"{key}_h")
         d1, d2, d3 = st.columns([1, 1, 2])
         new_date = d1.date_input("Proposed date", p.proposed.date(), key=f"{key}_d")
         new_time = d2.time_input("Proposed time", p.proposed.timetz().replace(tzinfo=None),
@@ -56,14 +72,18 @@ def render_proposal_editor(p: ScheduleProposal, platform_note: str = "") -> dict
                         index=0 if p.mode == MODE_SCHEDULE else 1, key=f"{key}_m")
         ok = st.checkbox("I reviewed the video, caption, hashtags, date and time and approve "
                          "this schedule.", key=f"{key}_ok")
-        s1, s2 = st.columns(2)
+        s1, s2, s3 = st.columns(3)
         save = s1.form_submit_button("Save changes", use_container_width=True)
         approve = s2.form_submit_button("Approve", type="primary", use_container_width=True)
+        skip = s3.form_submit_button("⏭️ Skip", use_container_width=True)
+    if skip:
+        return {"action": "skip"}
     if not (save or approve):
         return None
     proposed = datetime.combine(new_date, new_time, tzinfo=p.proposed.tzinfo)
     if approve and not ok:
         st.error("Tick the confirmation box to approve.")
         approve = False
-    return {"proposed": proposed, "mode": mode, "approve": approve}
+    return {"action": "approve" if approve else "save", "proposed": proposed, "mode": mode,
+            "body": new_body, "hashtags": new_tags}
 

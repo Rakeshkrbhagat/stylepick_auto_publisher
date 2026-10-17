@@ -688,11 +688,22 @@ else:
                         "Facebook Page not connected – nothing was submitted.")
                 by_id = {r.video_id: r for r in records}
                 scheduling.submit_approved(approved, schedulers,
-                                           lambda p: resolve_video_path(by_id[p.video_id])[0])
+                                           lambda p: resolve_video_path(by_id[p.video_id])[0],
+                                           audit=ss.audit)
                 st.rerun()
             if n.button("Back", use_container_width=True, key="sch_back"):
                 ss.confirm_schedule = False
                 st.rerun()
+
+        with st.expander("Approval & action log"):
+            log = ss.audit.entries()
+            if log:
+                st.dataframe([{k: e.get(k) for k in ("at", "event", "platform", "filename",
+                                                     "proposed", "mode", "status", "message")}
+                              for e in reversed(log)], hide_index=True,
+                             use_container_width=True)
+            else:
+                st.caption("No approvals or actions recorded yet.")
 
 # ---------- progress & history ----------
 st.subheader("6. Progress & history")
