@@ -79,9 +79,11 @@ def render_source_inputs() -> dict:
                                   placeholder="https://drive.google.com/drive/folders/...",
                                   key="drive_url")
         gemini_url = c2.text_input("Gemini shared conversation URL",
-                                   placeholder="https://gemini.google.com/share/...",
+                                   placeholder="https://share.gemini.google/... or https://gemini.google.com/share/...",
                                    key="gemini_url",
-                                   help="Use Gemini → Share → Create public link.")
+                                   help="Use Gemini → Share → Create public link. Both "
+                                        "share.gemini.google/<id> and gemini.google.com/share/<id> "
+                                        "links are supported.")
         text = st.text_area(
             "Gemini response text (fallback – used instead of the URL when filled)", height=180,
             key="gemini_text",

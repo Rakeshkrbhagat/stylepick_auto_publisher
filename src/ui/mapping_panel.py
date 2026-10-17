@@ -18,16 +18,35 @@ def render_mapping_panel(report: MatchReport, content_keys: list[str]) -> list[t
     attention = report.needs_attention
     title = "Video ↔ content mapping"
     title += f" – {len(attention)} need attention" if attention else " – all matched ✅"
-    with st.expander(title, expanded=bool(attention)):
+    with st.expander(title, expanded=True):
+        st.caption("Review every mapping before preparing posts. Videos are matched to the Gemini "
+                   "response with the same trailing number (e.g. R-YT-10.mp4 → response 10); "
+                   "Drive listing order is never used.")
         st.dataframe([{
             "Video": m.filename,
+            "Video #": m.video_number if m.video_number is not None else "—",
+            "Response #": m.response_number if m.response_number is not None else "—",
             "Content": m.content_key or "—",
             "Method": m.method or "—",
             "Status": f"{MATCH_ICONS[m.status]} {m.status.value}"
                       + (" · duplicate" if m.duplicate_with else ""),
             "Notes": " ".join(m.notes),
-        } for m in report.matches], hide_index=True, use_container_width=True)
+        } for m in sorted(report.matches,
+                          key=lambda m: (m.video_number is None, m.video_number or 0,
+                                         m.filename.lower()))],
+            hide_index=True, use_container_width=True)
 
+        for n, names in report.duplicate_numbers.items():
+            st.warning(f"Number {n} is used by several videos: {', '.join(names)}. "
+                       f"Confirm which file belongs to response {n}, or skip/remap the others.")
+        for n, names in report.missing_responses.items():
+            st.warning(f"No Gemini response {n} for: {', '.join(names)}.")
+        if report.unmatched_responses:
+            st.info("Gemini responses without a video: "
+                    + ", ".join(str(n) for n in report.unmatched_responses))
+        if report.unnumbered_videos:
+            st.warning("Videos without a trailing number (map manually): "
+                       + ", ".join(report.unnumbered_videos))
         if report.duplicate_filenames:
             st.warning("Duplicate filenames in Drive: " + ", ".join(report.duplicate_filenames))
         if report.unused_content:

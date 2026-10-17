@@ -11,6 +11,9 @@ Run: streamlit run app.py
 
 from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+
 from src.redaction import install_log_redaction
 
 install_log_redaction()  # before anything else logs
@@ -35,8 +38,9 @@ from src.meta_graph import GraphClient  # noqa: E402
 from src.mock_data import SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT, SAMPLE_GEMINI_URL  # noqa: E402
 from src.models import PUBLISHABLE_PLATFORMS, Platform, Status  # noqa: E402
 from src.publishing_coordinator import ACTIVE, PublishingCoordinator, restore_status, summarize  # noqa: E402
-from src.publishing_service import MockPublisher  # noqa: E402
-from src.redaction import redact  # noqa: E402
+from src import scheduling  # noqa: E402
+from src.ui.schedule_panel import (  # noqa: E402
+    render_proposal_editor, render_review_table, render_schedule_table)
 from src.ui import batch_panel  # noqa: E402
 from src.ui import components as ui  # noqa: E402
 from src.ui import drive_panel  # noqa: E402
@@ -544,19 +548,154 @@ if jobs:
         if ss.get("confirm_batch"):
             st.warning(f"⚠️ Publish **{len(pending)}** job(s)? ({mode_text()})")
             y, n = st.columns(2)
-            if y.button("Confirm", type="primary", use_container_width=True):
-                ss.confirm_batch, ss.batch_started = False, True
+            if y.button("Yes, publish now", type="primary", use_container_width=True,
+                        key="batch_confirm"):
+                ss.confirm_batch = False
+                ss.batch_started = True
                 run_jobs(jobs)
                 st.rerun()
-            if n.button("Back", use_container_width=True):
+            if n.button("Back", use_container_width=True, key="batch_back"):
                 ss.confirm_batch = False
                 st.rerun()
     else:
         batch_panel.render_queue(jobs, editable=False)
     batch_panel.render_summary(summarize(jobs))
 
+# ---------- scheduled posts (date + 1 day) ----------
+st.subheader("5. Schedule posts (proposed date = original + 1 day)")
+st.caption("Nothing is submitted until you approve each post. Approved Facebook posts are "
+           "scheduled (or saved as drafts) – never published immediately. Instagram's API "
+           "cannot schedule Reels, so Instagram posts are prepared for manual scheduling.")
+ss.setdefault("schedules", {})
+
+
+def original_for(rec) -> datetime | None:
+    """Original date/time from the source data: Drive 'modified' time (local timezone)."""
+    video = next((v for v in (ss.drive_listing.videos if ss.drive_listing else [])
+                  if v.id == rec.video_id), None)
+    raw = getattr(video, "modified_time", "") if video else ""
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone() if raw else None
+    except ValueError:
+        return None
+
+
+valid = [r for r in records if r.is_valid]
+if not valid:
+    st.info("No valid videos to schedule.")
+else:
+    with st.expander("Set or correct an original date/time"):
+        o1, o2, o3, o4 = st.columns([2, 1, 1, 1])
+        o_name = o1.selectbox("Video", [r.filename for r in valid], key="sch_orig_video")
+        o_date = o2.text_input("Original date", placeholder="9 September", key="sch_orig_date")
+        o_time = o3.text_input("Original time", placeholder="10:30 AM", key="sch_orig_time")
+        if o4.button("Apply", use_container_width=True):
+            try:
+                orig = scheduling.parse_original(o_date, o_time).astimezone()
+                r = next(r for r in valid if r.filename == o_name)
+                for p in r.selected_platforms:
+                    old = ss.schedules.get((r.video_id, p.value))
+                    if old and old.submitted:
+                        continue
+                    ss.schedules[(r.video_id, p.value)] = scheduling.build_proposal(
+                        r.video_id, r.filename, p, r.content[p].publish_text(), orig)
+                st.rerun()
+            except scheduling.ScheduleParseError as exc:
+                st.error(str(exc))
+
+    proposals = []
+    for r in valid:
+        for p in r.selected_platforms:
+            k = (r.video_id, p.value)
+            prop = ss.schedules.get(k)
+            if prop is None:
+                orig = original_for(r)
+                if orig is None:
+                    continue
+                prop = ss.schedules[k] = scheduling.build_proposal(
+                    r.video_id, r.filename, p, r.content[p].publish_text(), orig)
+            elif not prop.submitted and prop.caption != r.content[p].publish_text():
+                scheduling.edit_proposal(prop, caption=r.content[p].publish_text())  # re-approve
+            proposals.append(prop)
+    missing = [r.filename for r in valid if not any(p.video_id == r.video_id for p in proposals)]
+    if missing:
+        st.warning("No original date/time found for: " + ", ".join(missing)
+                   + ". Set it above to prepare these posts.")
+
+    if proposals:
+        st.markdown("**Review (read-only – importing or matching never schedules anything)**")
+        render_review_table([scheduling.review_row(
+            r, {p.value: ss.schedules.get((r.video_id, p.value))
+                for p in PUBLISHABLE_PLATFORMS}) for r in records])
+        render_schedule_table(proposals)
+        names = sorted({p.filename for p in proposals})
+        sch_name = st.selectbox("Review a video", names, key="sch_review")
+        by_id = {r.video_id: r for r in records}
+        for prop in [p for p in proposals if p.filename == sch_name]:
+            note = (scheduling.INSTAGRAM_UNSUPPORTED if prop.platform == Platform.INSTAGRAM
+                    else "" if fb["page"] else "Facebook Page not connected – connect it in the "
+                                                "sidebar to schedule. Nothing will be submitted.")
+            content = by_id[prop.video_id].get_content(prop.platform)
+            act = render_proposal_editor(prop, note, content.caption or content.description,
+                                         content.hashtags)
+            if not act:
+                continue
+            a = act["action"]
+            if a == "skip":
+                scheduling.skip(prop, ss.audit)
+            elif a == "unskip":
+                scheduling.unskip(prop, ss.audit)
+            elif a == "retry":
+                scheduling.retry(prop, ss.audit)
+            else:
+                if content.caption or not content.description:
+                    content.caption = act["body"]
+                else:
+                    content.description = act["body"]
+                content.hashtags = act["hashtags"]
+                revalidate(by_id[prop.video_id])
+                scheduling.edit_proposal(prop, new_proposed=act["proposed"], mode=act["mode"],
+                                         caption=content.publish_text())
+                ss.audit.record(prop, "edited")
+                if a == "approve":
+                    scheduling.approve(prop, ss.audit)
+            st.rerun()
+
+        approved = [p for p in proposals if p.status == scheduling.APPROVED]
+        if st.button(f"📤 Submit approved schedules ({len(approved)})", type="primary",
+                     disabled=not approved):
+            ss.confirm_schedule = True
+        if ss.get("confirm_schedule") and approved:
+            st.warning("Submit these approved posts? Scheduled Facebook posts will be published "
+                       "automatically by Facebook at the scheduled time.\n\n" + "\n".join(
+                           f"- {p.platform.value}: {p.filename} → {scheduling.fmt(p.proposed)} "
+                           f"({p.mode})" for p in approved))
+            y, n = st.columns(2)
+            if y.button("Confirm submit", type="primary", use_container_width=True,
+                        key="sch_confirm"):
+                ss.confirm_schedule = False
+                schedulers = {Platform.INSTAGRAM: scheduling.instagram_scheduler()}
+                if fb["page"]:
+                    try:
+                        page = ss.meta_auth.page_for_publishing()
+                        schedulers[Platform.FACEBOOK] = scheduling.FacebookReelsScheduler(
+                            ss.graph, page.id, page.access_token, ss.job_store)
+                    except MetaError as exc:
+                        schedulers[Platform.FACEBOOK] = scheduling.UnsupportedScheduler(
+                            f"Facebook: {redact(exc)} Nothing was submitted.")
+                else:
+                    schedulers[Platform.FACEBOOK] = scheduling.UnsupportedScheduler(
+                        "Facebook Page not connected – nothing was submitted.")
+                by_id = {r.video_id: r for r in records}
+                scheduling.submit_approved(approved, schedulers,
+                                           lambda p: resolve_video_path(by_id[p.video_id])[0])
+                st.rerun()
+            if n.button("Back", use_container_width=True, key="sch_back"):
+                ss.confirm_schedule = False
+                st.rerun()
+
 # ---------- progress & history ----------
-st.subheader("5. Progress & history")
+st.subheader("6. Progress & history")
 ui.render_progress(records)
 ui.render_history(ss.history)
 render_history_panel(ss.history_store)

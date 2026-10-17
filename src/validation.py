@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import re
-
 from src.drive_client import extract_folder_id
 from src.drive_errors import InvalidFolderUrlError
 from src.models import PUBLISHABLE_PLATFORMS, MatchStatus, Platform, Status, VideoRecord
 
-_GEMINI_RE = re.compile(r"^https://(gemini\.google\.com/(share|app)/|g\.co/gemini/share/)[\w-]+")
 
 INSTAGRAM_CAPTION_LIMIT = 2200
 INSTAGRAM_HASHTAG_LIMIT = 30
@@ -24,9 +21,17 @@ def validate_drive_url(url: str) -> str | None:
 
 
 def validate_gemini_url(url: str) -> str | None:
-    """Gemini URL is optional when response text or a file is provided."""
-    if url.strip() and not _GEMINI_RE.match(url.strip()):
-        return "Invalid Gemini conversation URL. Expected https://gemini.google.com/share/<id>"
+    """Gemini URL is optional when response text or a file is provided.
+
+    Accepts https://gemini.google.com/share/<id> and https://share.gemini.google/<id>."""
+    from src.gemini_parser import GeminiRetrievalError, validate_share_url
+
+    if not url.strip():
+        return None
+    try:
+        validate_share_url(url)
+    except GeminiRetrievalError as exc:
+        return f"Invalid Gemini conversation URL. {exc.reason}"
     return None
 
 
@@ -84,4 +89,3 @@ def revalidate(rec: VideoRecord) -> None:
             rec.platform_status[p] = Status.PENDING
         elif current not in (Status.FAILED, Status.RETRY_PENDING):
             rec.platform_status[p] = Status.READY
-

@@ -1,21 +1,24 @@
 """Reusable parser for Gemini responses (shared URL, pasted text or imported file).
 
-Supports the existing StylePick format with YouTube Shorts, Instagram Reels and
-Facebook Reels sections, in plain text or Gemini-style Markdown, e.g.:
+Supports the StylePick format with YouTube Shorts, Instagram Reels and Facebook Reels
+sections, in plain text or Gemini-style Markdown, e.g.:
 
-    === VIDEO: stylepick_01.mp4 ===          (also "## Video 1: x.mp4", "**Video 2 – x.mov**")
-    ### 1. YouTube Shorts 🎬
+    === VIDEO: stylepick_01.mp4 ===          (also "## Video 1: x.mp4", "## Response 3")
+    ### 1. YouTube Shorts 🎬                  (parsed for reference only – never published)
     **Hook:** ...
-    **Title:** ...
-    * **YouTube Tags:** ...
-    ### Instagram Reels
-    **Reel Cover Title:** ...
-    **Caption:**
+    ### INSTAGRAM REELS
+    **Instagram Caption:**
     multi-line text ✨ हिंदी
-    ### Facebook Reels
-    **SEO Title:** ...
+    **Instagram Hashtags:** #a #b
+    **SEO Keywords:** ...                     (ignored – ends the previous field)
+    ### FACEBOOK REELS
+    **Facebook Description:** ...
+    **Facebook Hashtags:** ...
 
-Values are copied verbatim (Hindi, emojis, line breaks, hashtags preserved).
+Only fields inside the matching platform section are used, so Instagram content never
+becomes Facebook content (or vice versa). Labels such as SEO keywords, search phrases,
+share/save/comment triggers or optimized transcripts end the current field and are never
+appended to a caption. Values are copied verbatim (Hindi, emojis, line breaks, hashtags).
 Missing or ambiguous fields are reported as ``ParseIssue`` and never guessed.
 """
 
@@ -28,11 +31,11 @@ from dataclasses import dataclass, field
 from src.models import Platform, PlatformContent
 
 # ------------------------------------------------------------------ field spec
+# Fields required for publishing (missing ones are flagged for review).
+# YouTube Shorts content is parsed for reference only – it is never published or flagged.
 EXPECTED_FIELDS: dict[Platform, list[str]] = {
-    Platform.INSTAGRAM: ["cover_title", "caption", "hashtags", "on_screen_text", "transcript"],
-    Platform.FACEBOOK: ["seo_title", "description", "hashtags"],
-    Platform.YOUTUBE: ["hook", "title", "description", "hashtags", "youtube_tags",
-                       "on_screen_text", "transcript"],
+    Platform.INSTAGRAM: ["caption", "hashtags"],
+    Platform.FACEBOOK: ["description", "hashtags"],
 }
 
 FIELD_LABELS = {
@@ -51,6 +54,7 @@ _ALIASES = {
     "description": "description", "seo description": "description",
     "video description": "description", "facebook description": "description",
     "seo optimized description": "description", "youtube description": "description",
+    "post description": "description",
     "hashtags": "hashtags", "hashtag": "hashtags", "trending hashtags": "hashtags",
     "youtube tags": "youtube_tags", "tags": "youtube_tags", "seo tags": "youtube_tags",
     "reel cover title": "cover_title", "cover title": "cover_title", "cover text": "cover_title",
@@ -67,9 +71,17 @@ _PLATFORM_OVERRIDES = {
     Platform.FACEBOOK: {"title": "seo_title"},
 }
 
+IGNORED_FIELD = "__ignored__"  # label for another platform -> skip its text
+_LABEL_PLATFORM = {
+    "instagram": Platform.INSTAGRAM, "insta": Platform.INSTAGRAM, "ig": Platform.INSTAGRAM,
+    "facebook": Platform.FACEBOOK, "fb": Platform.FACEBOOK,
+    "youtube": Platform.YOUTUBE, "yt": Platform.YOUTUBE, "shorts": Platform.YOUTUBE,
+}
+
 _VIDEO_EXT = r"\.(?:mp4|mov|m4v|avi|mkv|webm)"
 _VIDEO_RE = re.compile(
-    r"^[\s#*=_>\-]*video\s*(?:#?\s*(?P<num>\d+))?\s*[:\-–—.)]?\s*"
+    r"^[\s#*=_>\-]*(?:video|response|reel|clip|request)\s*(?:(?:no\.?|number)\s*)?"
+    r"(?:#?\s*(?P<num>\d+))?\s*[:\-–—.)]?\s*"
     r"(?P<name>[^*=#]*?" + _VIDEO_EXT + r")?[\s*=#_]*$",
     re.I,
 )
@@ -82,6 +94,16 @@ _PLATFORM_NORM = re.compile(
     r"(instagram)|(facebook))(?: (?:content|section|post|version|copy|details))?$"
 )
 _RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S")  # markdown heading (a '#hashtag' has no space)
+# Unrecognised labels with this wording are other fields (SEO keywords, triggers, ...):
+# they end the current field so their text is never appended to a caption.
+_OTHER_LABEL_RE = re.compile(
+    r"\b(?:seo|keywords?|search|phrases?|triggers?|cta|call to action|transcript|script|tags?|"
+    r"titles?|hook|tips?|notes?|engagement|thumbnail|cover|music|audio|sound|posting|best time|"
+    r"target|audience|overlay|on screen|text|save|share|comment|pinned|alt|location|link|"
+    r"duration|format|caption|description|hashtags?)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -126,22 +148,41 @@ def detect_platform(line: str) -> Platform | None:
 
 
 def detect_video(line: str) -> str | None:
-    """Return a video key ('file.mp4' or 'Video 3') if the line is a video header."""
+    """Return a video key ('file.mp4' or 'Video 3') if the line is a video header.
+
+    Numbered headers ('Video 3', 'Response 3', 'Reel #3', 'Request No. 3') all become
+    'Video 3' (leading zeros dropped) so they can be matched by trailing number."""
     m = _VIDEO_RE.match(line)
     if not m or not (m.group("num") or m.group("name")):
         return None
-    return (m.group("name") or "").strip() or f"Video {m.group('num')}"
+    return (m.group("name") or "").strip() or f"Video {int(m.group('num'))}"
 
 
 def resolve_field(label: str, platform: Platform | None) -> str | None:
+    """Map a field label to a PlatformContent attribute.
+
+    Returns ``IGNORED_FIELD`` for labels naming another platform (e.g. 'Instagram Caption'
+    inside the Facebook section) so content never crosses platforms."""
     key = _norm(re.sub(r"\(.*?\)", "", label))
-    for prefix in ("instagram ", "facebook ", "youtube ", "reel ", "reels "):
+    label_platform = _LABEL_PLATFORM.get(key.split(" ", 1)[0]) if key else None
+    if label_platform and platform and label_platform != platform:
+        return IGNORED_FIELD
+    for prefix in ("instagram ", "insta ", "ig ", "facebook ", "fb ", "youtube ", "yt ",
+                   "reel ", "reels "):
         if key not in _ALIASES and key.startswith(prefix):
             key = key[len(prefix):]
     name = _ALIASES.get(key)
     if name and platform in _PLATFORM_OVERRIDES:
         name = _PLATFORM_OVERRIDES[platform].get(name, name)
     return name
+
+
+def _is_other_label(m: re.Match, line: str) -> bool:
+    """An unrecognised 'Label:' line that is clearly a field header (bold or known wording)."""
+    label = m.group("label").strip()
+    if len(label.split()) > 5:
+        return False
+    return "**" in line[: m.end("label") + 4] or bool(_OTHER_LABEL_RE.search(label))
 
 
 def _clean(lines: list[str]) -> str:
@@ -188,12 +229,15 @@ def parse_gemini_response(text: str) -> ParseResult:
             continue
         m = _FIELD_RE.match(line) if platform else None
         fname = resolve_field(m.group("label"), platform) if m else None
+        if fname == IGNORED_FIELD or (m and fname is None and _is_other_label(m, line)):
+            current = None  # e.g. 'SEO Keywords:', 'Share Trigger:' – never part of a caption
+            continue
         if fname:
             current = [m.group("value")]
             raw[video][platform].setdefault(fname, []).append(current)
             continue
         if current is not None:
-            if _RULE_RE.match(line):  # markdown horizontal rule ends a field
+            if _RULE_RE.match(line) or _HEADING_RE.match(line):  # rule / heading ends a field
                 current = None
                 continue
             current.append(line)
@@ -224,8 +268,9 @@ def parse_gemini_response(text: str) -> ParseResult:
     for vkey in video_order:
         if vkey.startswith("Video "):
             result.issues.append(ParseIssue(
-                vkey, "", "", "error",
-                f"'{vkey}' has no filename; it cannot be matched to a Drive video automatically."))
+                vkey, "", "", "warning",
+                f"'{vkey}' has no filename; it will be matched to the Drive video whose filename "
+                f"ends in {vkey.split()[1]} – please review the mapping."))
     if orphan_lines and video_order:
         result.issues.append(ParseIssue(
             "", "", "", "warning",
@@ -253,8 +298,9 @@ def _flag_missing(result: ParseResult, vkey: str) -> None:
             if f == "description" and plat == Platform.FACEBOOK and pc.caption:
                 continue  # Facebook 'Caption' is accepted as the description
             if not getattr(pc, f):
-                result.issues.append(ParseIssue(vkey, plat.value, f, "warning",
-                                                f"{plat.value}: {FIELD_LABELS[f]} not found."))
+                result.issues.append(ParseIssue(
+                    vkey, plat.value, f, "warning",
+                    f"{plat.value}: {FIELD_LABELS[f]} not found – please review."))
 
 
 # ------------------------------------------------------------------ compat / other formats

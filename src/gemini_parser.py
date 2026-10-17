@@ -1,6 +1,7 @@
 """Gemini shared-conversation retrieval.
 
-Only *public share links* (gemini.google.com/share/<id> or g.co/gemini/share/<id>)
+Only *public share links* (gemini.google.com/share/<id>, share.gemini.google/<id> or
+g.co/gemini/share/<id>)
 are fetched, using a plain anonymous HTTPS GET – the same thing a browser does for
 anyone with the link. No login, cookies or private endpoints are used.
 
@@ -21,9 +22,12 @@ from typing import Callable
 from src.content_parser import ParseResult, parse_gemini_response
 
 SHARE_URL_RE = re.compile(
-    r"^https://(?:gemini\.google\.com/share/|g\.co/gemini/share/)[A-Za-z0-9_-]{6,}/?(?:[?#].*)?$"
+    r"^https://(?:gemini\.google\.com/share/|g\.co/gemini/share/|share\.gemini\.google/)"
+    r"(?P<id>[A-Za-z0-9_-]{6,})/?(?:[?#].*)?$",
+    re.IGNORECASE,
 )
 _PRIVATE_URL_RE = re.compile(r"^https://gemini\.google\.com/(?:app|u/\d+/app)(?:/|$)")
+SUPPORTED_FORMATS = "https://gemini.google.com/share/<id> or https://share.gemini.google/<id>"
 
 FALLBACK_HINT = (
     "Open the shared link in your browser, copy the full Gemini response "
@@ -49,9 +53,14 @@ def validate_share_url(url: str) -> str:
         )
     if not SHARE_URL_RE.match(url):
         raise GeminiRetrievalError(
-            "Not a Gemini shared conversation URL (expected https://gemini.google.com/share/<id>)."
+            f"Not a Gemini shared conversation URL (expected {SUPPORTED_FORMATS})."
         )
     return url
+
+
+def extract_share_id(url: str) -> str:
+    """Conversation ID of a supported share URL (raises GeminiRetrievalError if invalid)."""
+    return SHARE_URL_RE.match(validate_share_url(url)).group("id")
 
 
 class _TextExtractor(HTMLParser):

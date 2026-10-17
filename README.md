@@ -96,7 +96,9 @@ rate limits (retried with backoff), unsupported content and failed processing.
 ## Gemini content
 
 **Sources (priority order):** imported file (`.txt`, `.md`, `.json`) → pasted text → shared URL.
-Only public share links are fetched (anonymous HTTPS GET). If the page is rendered with JavaScript,
+Only public share links are fetched (anonymous HTTPS GET). Supported formats:
+`https://gemini.google.com/share/<id>` and `https://share.gemini.google/<id>` (the URL is fetched
+exactly as supplied). If the page is rendered with JavaScript,
 the app explains why it couldn't read it and asks you to paste the response or import a file.
 
 ```text
@@ -114,9 +116,24 @@ Missing fields are flagged. Ambiguous fields are left empty and flagged, never g
 ## Matching
 
 Matching is deterministic, in this order: manual mapping → exact filename → Drive file ID → filename
-without extension. Similar names, "Video N" blocks, duplicate filenames and content claimed by
+without extension → **trailing number**. Similar names, duplicate filenames and content claimed by
 several videos need you to confirm, correct or skip them. Invalid or unconfirmed records are left
 out of publishing. Text is copied exactly as written; your edits are marked and can be restored.
+
+### Trailing-number matching
+
+When the Gemini conversation is numbered (headers like `## Video 3`, `Response 3`, `Reel #3` or
+`Request No. 3`), each Drive video is matched to the response with the same number at the end of
+its filename, whatever the prefix: `R-YT-1.mp4` → response 1, `M-New-2.mp4` → response 2,
+`R-YT-10.mp4` → response 10 (never 1). Drive listing order and alphabetical order are never used.
+
+The mapping panel lists each filename with its video number and response number so you can check
+them before any post is prepared. It also reports:
+- several files ending in the same number → you confirm the correct file (the others are released)
+  or set an explicit mapping;
+- videos whose number has no Gemini response;
+- Gemini responses with no video;
+- videos without a trailing number (map them manually).
 
 ## Run locally
 
@@ -178,4 +195,3 @@ src/
 Everything runs locally, so there's no paid hosting. The Graph API is free to use, but rate limits,
 publishing quotas, App Review and account eligibility apply. Never commit passwords, tokens or app
 secrets.
-
