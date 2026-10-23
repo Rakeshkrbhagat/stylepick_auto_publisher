@@ -1,0 +1,8 @@
+E       AssertionError: assert 'One' == ''
+E         
+E         + One
+E       ModuleNotFoundError: No module named 'google.auth'
+E       ModuleNotFoundError: No module named 'google.auth'
+FAILED tests/test_gemini_parser.py::test_ambiguous_field_left_empty - Asserti...
+FAILED tests/test_security.py::test_google_not_connected_and_disconnect - Mod...
+FAILED tests/test_security.py::test_google_invalid_stored_token_forces_reauth

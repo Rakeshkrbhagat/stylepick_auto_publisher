@@ -79,7 +79,8 @@ def render(url: str, seconds: float) -> dict:
                                      "publicly shared"}
                 try:
                     page.wait_for_function(
-                        f"() => /instagram|facebook/i.test(({DEEP_TEXT_JS})())", timeout=ms)
+                        "() => document.querySelector('message-content') || "
+                        f"/instagram|facebook/i.test(({DEEP_TEXT_JS})())", timeout=ms)
                 except PwTimeout:
                     seen = page.evaluate(DEEP_TEXT_JS)
                     return {"ok": False, "kind": "empty",
@@ -92,6 +93,12 @@ def render(url: str, seconds: float) -> dict:
                 for _ in range(6):
                     page.mouse.wheel(0, 4000)
                     page.wait_for_timeout(300)
+                # Each <message-content> is one Gemini answer (user prompts are excluded).
+                answers = page.locator("message-content").all_inner_texts()
+                if answers:
+                    text = "\n\n".join(f"=== Video {i} ===\n{a.strip()}"
+                                       for i, a in enumerate(answers, start=1))
+                    return {"ok": True, "text": text, "turns": len(answers)}
                 return {"ok": True, "text": page.evaluate(DEEP_TEXT_JS)}
             finally:
                 browser.close()

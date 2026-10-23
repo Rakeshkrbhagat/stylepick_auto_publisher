@@ -1,0 +1,8 @@
+18 BAD []
+'#amlatree\n\n#sanatandharma\n\n#spiritualreels\n\n#hindurituals\n\n#dharmikgyan'
+[]
+/Applications/Xcode.app/Contents/Developer/usr/bin/python3: No module named pytest
+18 BAD []
+'#amlatree\n\n#sanatandharma\n\n#spiritualreels\n\n#hindurituals\n\n#dharmikgyan'
+[]
+/Applications/Xcode.app/Contents/Developer/usr/bin/python3: No module named pytest

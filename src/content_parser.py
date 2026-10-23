@@ -100,6 +100,11 @@ _BARE_LABEL_RE = re.compile(
     r"(?P<label>[A-Za-z][A-Za-z0-9 \-/()'&]{0,48}?)\s*[*_]*\s*[:：]?\s*$")
 
 
+_NUMBERED_RE = re.compile(r"^\s*(?:#{1,6}\s+)?[*_]*\d{1,2}[.)]\s+\S")
+# '7. Instagram Search Phrases', '13. Give the affilate Product name…' (English section titles)
+_NUMBERED_HEADING_RE = re.compile(r"^\s*[*_]*\d{1,2}[.)]\s+[*_]*[A-Za-z][A-Za-z0-9 ,'&/()\-]{2,100}[*_:]*\s*$")
+
+
 def _is_caps_heading(label: str) -> bool:
     letters = [c for c in label if c.isalpha()]
     return (len(letters) >= 3 and all(c.isupper() for c in letters)
@@ -259,7 +264,8 @@ def parse_gemini_response(text: str) -> ParseResult:
                     current = []
                     raw[video][platform].setdefault(bname, []).append(current)
                     continue
-                if _is_caps_heading(bare.group("label")):
+                if _is_caps_heading(bare.group("label")) or _NUMBERED_HEADING_RE.match(line):
+                    # 'AFFILIATE PRODUCT', '7. Instagram Search Phrases', '8. Share Trigger'
                     current = None  # e.g. 'AFFILIATE PRODUCT' – a new, unrelated block
                     continue
         if fname == IGNORED_FIELD or (m and fname is None and _is_other_label(m, line)):
@@ -270,7 +276,8 @@ def parse_gemini_response(text: str) -> ParseResult:
             raw[video][platform].setdefault(fname, []).append(current)
             continue
         if current is not None:
-            if _RULE_RE.match(line) or _HEADING_RE.match(line):  # rule / heading ends a field
+            if (_RULE_RE.match(line) or _HEADING_RE.match(line)
+                    or (not m and _NUMBERED_HEADING_RE.match(line))):  # rule / heading ends a field
                 current = None
                 continue
             current.append(line)
@@ -283,7 +290,7 @@ def parse_gemini_response(text: str) -> ParseResult:
             pc = PlatformContent()
             for fname, occurrences in fields.items():
                 non_empty = [v for v in (_clean(o) for o in occurrences) if v]
-                if len(set(non_empty)) > 1:
+                if len(set(non_empty)) > 1 and fname in EXPECTED_FIELDS.get(plat, []):
                     result.issues.append(ParseIssue(
                         vkey, plat.value, fname, "error",
                         f"{plat.value}: {FIELD_LABELS[fname]} is ambiguous ({len(non_empty)} "
