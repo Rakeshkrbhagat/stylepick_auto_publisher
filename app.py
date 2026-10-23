@@ -39,6 +39,18 @@ from src.video_source import GoogleDriveSource, MockDriveSource, sync_records  #
 st.set_page_config(page_title=settings.app_name, page_icon=settings.app_icon, layout="wide")
 ss = st.session_state
 
+
+@st.cache_resource
+def _prepare_gemini_browser() -> bool:
+    """Once per server process: start a background Chromium download if it's missing."""
+    from src.gemini_parser import _browser_enabled, browser_ready, start_browser_install
+    if _browser_enabled() and not browser_ready():
+        start_browser_install()
+    return True
+
+
+_prepare_gemini_browser()
+
 ss.setdefault("flash", None)
 ss.setdefault("content", {})
 ss.setdefault("parse_result", None)
@@ -195,8 +207,7 @@ if submitted:
             elif gemini_text.strip():
                 result, label = parse_gemini_response(gemini_text), "pasted text"
             else:
-                with st.spinner("Reading the Gemini conversation (rendering the shared page can "
-                                "take up to a minute)…"):
+                with st.spinner("Reading the Gemini conversation (up to about 40 seconds)…"):
                     result = parse_gemini_response(fetch_shared_conversation(gemini_url))
                 label = "Gemini shared URL"
         except GeminiRetrievalError as exc:

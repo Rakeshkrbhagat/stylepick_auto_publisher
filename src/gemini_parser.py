@@ -16,6 +16,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from pathlib import Path
 from html.parser import HTMLParser
 from typing import Callable
 
@@ -144,72 +145,97 @@ class BrowserRenderError(Exception):
     """Headless rendering was unavailable or failed (message is user-facing)."""
 
 
-def render_with_browser(url: str, timeout: float = 45) -> str:
-    """Open the public share link in a headless Chromium (like a visitor's browser) and return
-    the rendered page text. Anonymous: no cookies, no Google sign-in, no private endpoints.
-
-    Requires the optional ``playwright`` package and its Chromium build
-    (``playwright install chromium``)."""
-    try:
-        from playwright.sync_api import Error as PwError
-        from playwright.sync_api import TimeoutError as PwTimeout
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise BrowserRenderError("browser rendering is not installed on this server "
-                                 "(playwright package missing)") from None
-    ms = int(timeout * 1000)
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
-            try:
-                page = browser.new_context(locale="en-US", user_agent=_HEADERS["User-Agent"]) \
-                    .new_page()
-                page.goto(url, wait_until="domcontentloaded", timeout=ms)
-                if "accounts.google.com" in page.url:
-                    raise BrowserRenderError("the link redirects to Google sign-in, so it is not "
-                                             "publicly shared")
-                try:  # wait until the conversation text has been rendered
-                    page.wait_for_function(
-                        "() => /instagram|facebook/i.test(document.body.innerText)", timeout=ms)
-                except PwTimeout:
-                    raise BrowserRenderError("the page rendered, but no Instagram/Facebook text "
-                                             f"appeared within {int(timeout)} s") from None
-                page.wait_for_timeout(1500)  # let the remaining turns finish rendering
-                return page.inner_text("body")
-            finally:
-                browser.close()
-    except BrowserRenderError:
-        raise
-    except PwTimeout:
-        raise BrowserRenderError(f"the page did not load within {int(timeout)} s") from None
-    except PwError as exc:
-        msg = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-        if ("Executable doesn't exist" in msg or "playwright install" in msg) and \
-                _install_browser_once():
-            return render_with_browser(url, timeout)
-        if "Executable doesn't exist" in msg or "playwright install" in msg:
-            raise BrowserRenderError("the headless browser is not installed on this server "
-                                     "(run 'playwright install chromium' in the build)") from None
-        raise BrowserRenderError(f"the headless browser failed ({msg[:120]})") from None
+RENDER_TIME_LIMIT = 40  # hard cap (seconds) for the whole browser attempt
 
 
-_INSTALL_TRIED = False
+def render_with_browser(url: str, timeout: float = RENDER_TIME_LIMIT) -> str:
+    """Render the public share link in a headless browser, in a separate process with a hard
+    time limit, so the app can never get stuck. Anonymous visit – no sign-in, no cookies.
 
-
-def _install_browser_once() -> bool:
-    """Download Chromium for Playwright the first time it is needed (once per process)."""
-    global _INSTALL_TRIED
-    if _INSTALL_TRIED:
-        return False
-    _INSTALL_TRIED = True
+    If Chromium isn't installed yet, a one-time download is started in the background and the
+    user is told to retry shortly (the request itself is never blocked by the download)."""
     import subprocess
     import sys
+
+    if not browser_ready():
+        start_browser_install()
+        raise BrowserRenderError(_install_status_message())
+    root = Path(__file__).resolve().parents[1]
+    per_step = max(5.0, (timeout - 8) / 2)
     try:
-        done = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
-                              capture_output=True, timeout=300)
-        return done.returncode == 0
-    except (OSError, subprocess.SubprocessError):
+        done = subprocess.run(
+            [sys.executable, "-m", "src.gemini_render", url, str(per_step)],
+            capture_output=True, timeout=timeout, cwd=str(root))
+    except subprocess.TimeoutExpired:
+        raise BrowserRenderError(f"rendering took longer than {int(timeout)} s and was "
+                                 "stopped") from None
+    except OSError as exc:
+        raise BrowserRenderError(f"could not start the renderer ({type(exc).__name__})") from None
+    try:
+        out = json.loads(done.stdout.decode("utf-8") or "{}")
+    except ValueError:
+        out = {}
+    if out.get("ok"):
+        return out.get("text", "")
+    if out.get("kind") == "no_browser":
+        start_browser_install()
+        raise BrowserRenderError(_install_status_message())
+    raise BrowserRenderError(out.get("error") or "the headless browser exited unexpectedly")
+
+
+# ---------------------------------------------------------------- one-time browser install
+_INSTALL = {"state": "idle", "error": ""}  # idle | running | done | failed
+
+
+def browser_ready() -> bool:
+    """True when Playwright and its Chromium build are present (no network, no launch)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
         return False
+    if _INSTALL["state"] == "done":
+        return True
+    try:
+        with sync_playwright() as pw:
+            return Path(pw.chromium.executable_path).exists()
+    except Exception:
+        return False
+
+
+def start_browser_install() -> None:
+    """Download Chromium once, in a background thread (never blocks a request)."""
+    import threading
+
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        _INSTALL.update(state="failed", error="playwright package missing")
+        return
+    if _INSTALL["state"] in ("running", "done"):
+        return
+    _INSTALL.update(state="running", error="")
+
+    def work():
+        import subprocess
+        import sys
+        try:
+            done = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                                  capture_output=True, timeout=600)
+            ok = done.returncode == 0
+            _INSTALL.update(state="done" if ok else "failed",
+                            error="" if ok else done.stderr.decode(errors="ignore")[-200:])
+        except Exception as exc:  # pragma: no cover
+            _INSTALL.update(state="failed", error=type(exc).__name__)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _install_status_message() -> str:
+    if _INSTALL["state"] == "failed":
+        return ("the headless browser could not be installed on this server "
+                f"({_INSTALL['error'].strip() or 'unknown error'})")
+    return ("the headless browser is being installed on this server (one-time, about 1–2 "
+            "minutes) – try the link again shortly")
 
 
 _HEADERS = {
