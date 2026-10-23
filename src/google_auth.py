@@ -124,6 +124,12 @@ class GoogleAuthManager:
                                 "the app.")
         except Exception as exc:
             msg = str(exc).lower()
+            if "runnable browser" in msg:
+                raise AuthError(
+                    "This server has no browser for the desktop sign-in flow. Set "
+                    "GOOGLE_OAUTH_REDIRECT_URI to the app's public URL (e.g. "
+                    "https://your-app.onrender.com/) and use a 'Web application' OAuth client "
+                    "with that URL as an Authorized redirect URI.") from None
             if (any(s in msg for s in ("access_denied", "cancel", "timed out"))
                     or isinstance(exc, (AttributeError, TimeoutError))):
                 raise AuthCancelledError() from None
@@ -142,6 +148,14 @@ class GoogleAuthManager:
 
         if not self.client_configured():
             raise AuthError(f"OAuth client file not found at '{self.client_secrets_file}'.")
+        try:
+            kind = json.loads(self.client_secrets_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise AuthError("The Google OAuth client JSON is unreadable.") from None
+        if "web" not in kind:
+            raise AuthError("The Google OAuth client is a 'Desktop app' client. For the hosted "
+                            "app create a 'Web application' client, add "
+                            f"{redirect_uri} as an Authorized redirect URI, and use its JSON.")
         # Confidential "Web application" client: authenticated with its client secret, so no
         # PKCE verifier has to be kept between the redirect and the callback (no storage).
         return Flow.from_client_secrets_file(str(self.client_secrets_file), SCOPES, state=state,

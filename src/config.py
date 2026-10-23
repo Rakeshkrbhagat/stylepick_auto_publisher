@@ -43,7 +43,9 @@ class Settings:
     google_client_secrets_file: Path = field(default_factory=_client_secrets_path)
     # Hosted deployments: the app's public URL, e.g. https://your-app.onrender.com/
     # Leave empty locally to use the desktop (local browser) sign-in flow.
-    google_redirect_uri: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "")
+    google_redirect_uri: str = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "") or (
+        os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/") + "/"
+        if os.getenv("RENDER_EXTERNAL_URL") else "")
     # Temporary download folder (cleaned automatically; nothing is kept permanently).
     work_dir: Path = Path(os.getenv("WORK_DIR", "/tmp/reelflow_downloads"))
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
