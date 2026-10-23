@@ -105,10 +105,66 @@ def test_facebook_title_maps_to_seo_title_and_caption_accepted():
 
 def test_unassigned_and_numbered_videos_flagged():
     r = parse_gemini_response("Instagram Reels\nCaption: x\n")
-    assert "(unassigned)" in r.content
-    assert any("no video filename" in i.message for i in r.issues)
+    assert "Video 1" in r.content
+    assert any("numbered 1–1 in the order" in i.message for i in r.issues)
     r = parse_gemini_response("Video 2\nInstagram Reels\nCaption: x\n")
     assert "Video 2" in r.content and any("no filename" in i.message for i in r.issues)
+
+
+HEADERLESS = """YOUTUBE SHORTS
+Title
+नवरात्रि उपाय 🔥
+Hashtags
+#shorts
+
+INSTAGRAM REELS
+Caption
+हम हर वर्ष नवरात्रि क्यों मनाते हैं? 🙏
+जानें इस वीडियो में।
+
+Hashtags
+#navratriupay #sanatandharma
+
+FACEBOOK REELS
+Description
+माँ दुर्गा से क्षमा माँगने का विधान ✨
+Hashtags
+#navratri #maadurga
+
+AFFILIATE PRODUCT
+No relevant affiliate product.
+
+YOUTUBE SHORTS
+Title
+दूसरा वीडियो
+INSTAGRAM REELS
+Caption
+दूसरा कैप्शन 💖
+Hashtags
+#two
+FACEBOOK REELS
+Description
+दूसरा विवरण
+Hashtags
+#fb2
+"""
+
+
+def test_headerless_responses_with_bare_labels():
+    r = parse_gemini_response(HEADERLESS)
+    assert list(r.content) == ["Video 1", "Video 2"]
+    ig = r.content["Video 1"][Platform.INSTAGRAM]
+    fb = r.content["Video 1"][Platform.FACEBOOK]
+    assert ig.caption == "हम हर वर्ष नवरात्रि क्यों मनाते हैं? 🙏\nजानें इस वीडियो में।"
+    assert ig.hashtags == "#navratriupay #sanatandharma"
+    assert fb.description == "माँ दुर्गा से क्षमा माँगने का विधान ✨"
+    assert fb.hashtags == "#navratri #maadurga"  # affiliate block not appended
+    assert r.content["Video 2"][Platform.INSTAGRAM].caption == "दूसरा कैप्शन 💖"
+    assert not [i for i in r.issues if i.severity == "error"]
+    recs = build_records([{"id": "a", "name": "R-YT-2.mp4"}, {"id": "b", "name": "M-New-1.mp4"}],
+                         r.content)
+    by = {x.video_id: x for x in recs}
+    assert by["a"].content_key == "Video 2" and by["b"].content_key == "Video 1"
 
 
 def test_no_sections():

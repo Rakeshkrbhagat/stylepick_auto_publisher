@@ -24,7 +24,7 @@ def render_google_account(auth: GoogleAuthManager, auth_url: str | None = None) 
         return actions
     if not auth.client_configured():
         st.sidebar.warning("Google sign-in is not configured on this server. Ask the "
-                           "administrator to set GOOGLE_CLIENT_SECRETS_FILE, or use sample data.")
+                           "administrator to set GOOGLE_CLIENT_SECRETS_JSON (or GOOGLE_CLIENT_SECRETS_FILE) and GOOGLE_OAUTH_REDIRECT_URI, or use sample data.")
         return actions
     if auth.is_connected():
         email = st.session_state.get("google_email") or auth.account_email()

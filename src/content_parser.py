@@ -94,6 +94,16 @@ _PLATFORM_NORM = re.compile(
     r"(instagram)|(facebook))(?: (?:content|section|post|version|copy|details))?$"
 )
 _RULE_RE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+# A label alone on its line ("Hashtags", "**Caption**", "### Description"), value below it.
+_BARE_LABEL_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+)?(?:[-*•]\s+)?(?:\d+[.)]\s*)?[*_]*\s*"
+    r"(?P<label>[A-Za-z][A-Za-z0-9 \-/()'&]{0,48}?)\s*[*_]*\s*[:：]?\s*$")
+
+
+def _is_caps_heading(label: str) -> bool:
+    letters = [c for c in label if c.isalpha()]
+    return (len(letters) >= 3 and all(c.isupper() for c in letters)
+            and 2 <= len(label.split()) <= 5)
 _HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S")  # markdown heading (a '#hashtag' has no space)
 # Unrecognised labels with this wording are other fields (SEO keywords, triggers, ...):
 # they end the current field so their text is never appended to a caption.
@@ -202,6 +212,7 @@ def parse_gemini_response(text: str) -> ParseResult:
     current: list[str] | None = None
     orphan_lines = 0
     implicit_used = False
+    implicit_keys: list[str] = []
 
     def start_video(key: str):
         nonlocal video, platform, current
@@ -221,14 +232,36 @@ def parse_gemini_response(text: str) -> ParseResult:
             continue
         p = detect_platform(line)
         if p:
-            if video is None:  # platform sections without a video header
+            # Header-less responses (pasted one after another): a new response begins when a
+            # platform section starts outside any video, repeats in the current implicit block,
+            # or YouTube Shorts (the first section) appears after Instagram/Facebook.
+            if video is None or (video in implicit_keys and (
+                    p in raw[video] or (p == Platform.YOUTUBE and raw[video]))):
                 implicit_used = True
-                start_video("(unassigned)")
+                key = f"Video {len(implicit_keys) + 1}"
+                while key in raw:
+                    key = f"Video {int(key.split()[1]) + 1}"
+                implicit_keys.append(key)
+                start_video(key)
             platform, current = p, None
             raw[video].setdefault(p, {})
             continue
         m = _FIELD_RE.match(line) if platform else None
         fname = resolve_field(m.group("label"), platform) if m else None
+        if platform and not m:
+            bare = _BARE_LABEL_RE.match(line)
+            if bare:
+                bname = resolve_field(bare.group("label"), platform)
+                if bname == IGNORED_FIELD:
+                    current = None
+                    continue
+                if bname:
+                    current = []
+                    raw[video][platform].setdefault(bname, []).append(current)
+                    continue
+                if _is_caps_heading(bare.group("label")):
+                    current = None  # e.g. 'AFFILIATE PRODUCT' – a new, unrelated block
+                    continue
         if fname == IGNORED_FIELD or (m and fname is None and _is_other_label(m, line)):
             current = None  # e.g. 'SEO Keywords:', 'Share Trigger:' – never part of a caption
             continue
@@ -262,11 +295,12 @@ def parse_gemini_response(text: str) -> ParseResult:
 
     if implicit_used:
         result.issues.append(ParseIssue(
-            "(unassigned)", "", "", "error",
-            "Content has platform sections but no video filename header "
-            "(e.g. '=== VIDEO: name.mp4 ==='); it cannot be matched automatically."))
+            "", "", "", "warning",
+            f"No 'Video N' headers found: {len(implicit_keys)} response(s) were numbered 1–"
+            f"{len(implicit_keys)} in the order they appear (each starts with its YouTube "
+            "Shorts / Instagram section). Check the mapping before using the captions."))
     for vkey in video_order:
-        if vkey.startswith("Video "):
+        if vkey.startswith("Video ") and vkey not in implicit_keys:
             result.issues.append(ParseIssue(
                 vkey, "", "", "warning",
                 f"'{vkey}' has no filename; it will be matched to the Drive video whose filename "

@@ -35,7 +35,8 @@ Results exist only in your browser session.
 ## Environment variables
 | Variable | Required | Purpose |
 |---|---|---|
-| `GOOGLE_CLIENT_SECRETS_FILE` | yes (for Drive) | Path to the Google OAuth client JSON |
+| `GOOGLE_CLIENT_SECRETS_JSON` | one of these two | The OAuth client JSON pasted as an env var (easiest on Render) |
+| `GOOGLE_CLIENT_SECRETS_FILE` | one of these two | Path to the Google OAuth client JSON (e.g. Render Secret File) |
 | `GOOGLE_OAUTH_REDIRECT_URI` | hosted only | The app's public URL, e.g. `https://your-app.onrender.com/` |
 | `APP_NAME` | no | Display name (default `ReelFlow Studio`) |
 | `DEFAULT_TIMEZONE` | no | Used for converting Drive modified times (default `Asia/Kolkata`) |
