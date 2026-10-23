@@ -3,16 +3,53 @@
 Run as a subprocess (``python -m src.gemini_render <url> <seconds>``) so the web app can
 enforce a hard time limit and never hang. Prints one JSON object to stdout:
 {"ok": true, "text": "..."} or {"ok": false, "error": "...", "kind": "..."}.
-Anonymous visit only: no cookies, no Google sign-in, no private endpoints.
+Anonymous visit only: no cookies, no Google sign-in, no private endpoints. A Google cookie
+consent screen (shown to servers in some regions) is answered with "Reject all".
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/126.0 Safari/537.36")
+
+# Text of the whole document, including open shadow roots (innerText skips those).
+DEEP_TEXT_JS = r"""() => {
+  const out = [];
+  const blocks = (root) => {
+    const t = root.innerText !== undefined ? root.innerText : (root.textContent || '');
+    if (t) out.push(t);
+    for (const el of root.querySelectorAll('*')) {
+      if (el.shadowRoot) {
+        for (const c of el.shadowRoot.children) blocks(c);
+      }
+    }
+  };
+  blocks(document.body);
+  return out.join('\n');
+}"""
+
+_CONSENT_BUTTONS = ("Reject all", "Alle ablehnen", "Tout refuser", "Rechazar todo",
+                    "Accept all", "I agree")
+
+
+def _answer_consent(page, ms: int) -> None:
+    if "consent." not in page.url and not page.locator("form[action*='consent']").count():
+        return
+    for label in _CONSENT_BUTTONS:
+        btn = page.get_by_role("button", name=label)
+        if btn.count():
+            btn.first.click(timeout=ms)
+            page.wait_for_load_state("domcontentloaded", timeout=ms)
+            return
+
+
+def _snippet(text: str) -> str:
+    s = re.sub(r"\s+", " ", text or "").strip()
+    return (s[:160] + "…") if len(s) > 160 else (s or "(empty page)")
 
 
 def render(url: str, seconds: float) -> dict:
@@ -27,24 +64,35 @@ def render(url: str, seconds: float) -> dict:
     ms = int(seconds * 1000)
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, timeout=ms,
-                                         args=["--no-sandbox", "--disable-dev-shm-usage"])
+            browser = pw.chromium.launch(
+                headless=True, timeout=ms,
+                args=["--no-sandbox", "--disable-dev-shm-usage",
+                      "--disable-blink-features=AutomationControlled"])
             try:
-                page = browser.new_context(locale="en-US", user_agent=UA).new_page()
+                page = browser.new_context(locale="en-US", user_agent=UA,
+                                           viewport={"width": 1280, "height": 2000}).new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=ms)
+                _answer_consent(page, ms)
                 if "accounts.google.com" in page.url:
                     return {"ok": False, "kind": "signin",
                             "error": "the link redirects to Google sign-in, so it is not "
                                      "publicly shared"}
                 try:
                     page.wait_for_function(
-                        "() => /instagram|facebook/i.test(document.body.innerText)", timeout=ms)
+                        f"() => /instagram|facebook/i.test(({DEEP_TEXT_JS})())", timeout=ms)
                 except PwTimeout:
+                    seen = page.evaluate(DEEP_TEXT_JS)
                     return {"ok": False, "kind": "empty",
-                            "error": "the page rendered, but no Instagram/Facebook text "
-                                     f"appeared within {int(seconds)} s"}
-                page.wait_for_timeout(1500)  # let remaining turns finish rendering
-                return {"ok": True, "text": page.inner_text("body")}
+                            "error": "the page opened but showed no Instagram/Facebook text "
+                                     f"within {int(seconds)} s (page title: "
+                                     f"'{page.title()[:80]}', page text starts: "
+                                     f"'{_snippet(seen)}')"}
+                page.wait_for_timeout(2000)  # let remaining turns finish rendering
+                # Scroll so lazily rendered turns are added, then collect all text.
+                for _ in range(6):
+                    page.mouse.wheel(0, 4000)
+                    page.wait_for_timeout(300)
+                return {"ok": True, "text": page.evaluate(DEEP_TEXT_JS)}
             finally:
                 browser.close()
     except PwTimeout:

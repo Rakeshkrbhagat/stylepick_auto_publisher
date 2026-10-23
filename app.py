@@ -207,7 +207,7 @@ if submitted:
             elif gemini_text.strip():
                 result, label = parse_gemini_response(gemini_text), "pasted text"
             else:
-                with st.spinner("Reading the Gemini conversation (up to about 40 seconds)…"):
+                with st.spinner("Reading the Gemini conversation (up to about a minute)…"):
                     result = parse_gemini_response(fetch_shared_conversation(gemini_url))
                 label = "Gemini shared URL"
         except GeminiRetrievalError as exc:

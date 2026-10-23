@@ -145,7 +145,7 @@ class BrowserRenderError(Exception):
     """Headless rendering was unavailable or failed (message is user-facing)."""
 
 
-RENDER_TIME_LIMIT = 40  # hard cap (seconds) for the whole browser attempt
+RENDER_TIME_LIMIT = 60  # hard cap (seconds) for the whole browser attempt
 
 
 def render_with_browser(url: str, timeout: float = RENDER_TIME_LIMIT) -> str:
