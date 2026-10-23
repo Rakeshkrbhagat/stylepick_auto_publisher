@@ -103,6 +103,12 @@ if settings.google_redirect_uri and not ss.use_mock_drive and ss.auth.client_con
         st.sidebar.error(f"Google sign-in is misconfigured: {redact(exc)}")
 
 g = drive_panel.render_google_account(ss.auth, auth_url)
+if auth_url:
+    with st.sidebar.expander("Sign-in error 'redirect_uri_mismatch'?"):
+        st.caption("Add this exact URL under Google Cloud Console → APIs & Services → "
+                   "Credentials → your **Web application** OAuth client → **Authorized redirect "
+                   "URIs**, save, wait a few minutes and try again:")
+        st.code(settings.google_redirect_uri, language=None)
 if g["connect"]:
     with st.spinner("Waiting for Google sign-in in your browser…"):
         try:
@@ -186,12 +192,12 @@ if submitted:
             elif gemini_text.strip():
                 result, label = parse_gemini_response(gemini_text), "pasted text"
             else:
-                with st.spinner("Reading the Gemini conversation…"):
+                with st.spinner("Reading the Gemini conversation (rendering the shared page can "
+                                "take up to a minute)…"):
                     result = parse_gemini_response(fetch_shared_conversation(gemini_url))
                 label = "Gemini shared URL"
         except GeminiRetrievalError as exc:
-            st.warning(f"**Could not retrieve the Gemini conversation automatically.** {exc} "
-                       "Paste the response text into the box above instead.")
+            st.warning(f"**Could not retrieve the Gemini conversation automatically.** {exc}")
         except Exception as exc:  # malformed file etc.
             st.error(f"Could not read the Gemini content: {redact(exc)}")
         if result is not None and not result.has_content:

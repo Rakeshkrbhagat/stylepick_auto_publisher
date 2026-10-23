@@ -72,6 +72,27 @@ How tokens are handled:
 Render start command (unchanged):
 `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
 
+## Gemini share links
+The app tries, in order:
+1. **Direct download** of the share page. This rarely works because the page is built with
+   JavaScript.
+2. **Browser rendering:** it opens the public link in a headless Chromium, like an anonymous
+   visitor, and reads the rendered text. It never signs in or uses private endpoints.
+3. If both fail, the error lists what was tried. Paste the responses into the text box or
+   upload a `.txt` file instead.
+
+To enable browser rendering on Render:
+- Build command: `pip install -r requirements.txt && playwright install chromium`
+- Environment variable: `PLAYWRIGHT_BROWSERS_PATH=0` (stores the browser inside the project
+  so it's available at runtime)
+
+If Chromium can't start on the native Python runtime (missing system libraries), the error
+says so, and paste/upload still works. Set `GEMINI_BROWSER_RENDERING=off` to skip this step.
+
+Copied or rendered text may lack `Video N` headers. In that case each response, starting at
+its YouTube Shorts / Instagram section, is numbered 1, 2, 3… in order and matched to the
+filename numbers.
+
 ## Run & test locally
 ```
 pip install -r requirements.txt
