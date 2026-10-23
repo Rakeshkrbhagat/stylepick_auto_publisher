@@ -246,12 +246,11 @@ def build_records(
     report = match_videos(videos, list(content), overrides, confirmed, skipped)
     known = {r.video_id: r for r in existing or []}
     records = []
-    for idx, (v, m) in enumerate(zip(videos, report.matches)):
+    for v, m in zip(videos, report.matches):
         rec = known.get(v["id"])
         if rec is None:
             rec = VideoRecord(video_id=v["id"], filename=v["name"],
-                              thumbnail_url=v.get("thumbnail", ""),
-                              simulate_failure=(idx == 3))  # mock publisher hook only
+                              thumbnail_url=v.get("thumbnail", ""))
             rec.content_key = "\0"  # force content load below
         if rec.content_key != m.content_key:
             rec.content = copy.deepcopy(content.get(m.content_key, {})) if m.content_key else {}

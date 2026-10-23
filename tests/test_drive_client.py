@@ -62,10 +62,10 @@ def http_error(status, reason=""):
 
 
 def _ten_videos_page():
-    vids = [{"id": f"v{i:02d}", "name": f"stylepick_{i:02d}.mp4", "mimeType": "video/mp4",
+    vids = [{"id": f"v{i:02d}", "name": f"reel_{i:02d}.mp4", "mimeType": "video/mp4",
              "size": "1000", "modifiedTime": "2026-10-01T10:00:00Z", "webViewLink": "https://x"}
             for i in range(1, 9)]
-    vids += [{"id": "v09", "name": "stylepick_09.MOV", "mimeType": "video/quicktime", "size": "5"}]
+    vids += [{"id": "v09", "name": "reel_09.MOV", "mimeType": "video/quicktime", "size": "5"}]
     return vids
 
 
@@ -100,7 +100,7 @@ def test_classify_file():
 def test_list_videos_paginates_and_filters():
     page1 = {"files": _ten_videos_page()[:5], "nextPageToken": "t2"}
     page2 = {"files": _ten_videos_page()[5:] + [
-        {"id": "v10", "name": "stylepick_10.mp4", "mimeType": "video/mp4", "size": "7"},
+        {"id": "v10", "name": "reel_10.mp4", "mimeType": "video/mp4", "size": "7"},
         {"id": "d1", "name": "notes.pdf", "mimeType": "application/pdf"},
         {"id": "d2", "name": "raw.mkv", "mimeType": "video/x-matroska"},
     ]}
@@ -112,7 +112,7 @@ def test_list_videos_paginates_and_filters():
     assert len(listing.videos) == 10
     assert {s.name for s in listing.skipped} == {"notes.pdf", "raw.mkv"}
     v = listing.videos[0]
-    assert (v.id, v.name, v.size, v.web_view_link) == ("v01", "stylepick_01.mp4", 1000, "https://x")
+    assert (v.id, v.name, v.size, v.web_view_link) == ("v01", "reel_01.mp4", 1000, "https://x")
 
 
 @pytest.mark.parametrize("err, exc", [

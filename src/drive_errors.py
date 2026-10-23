@@ -1,4 +1,6 @@
 """User-facing error types for the Google Drive integration."""
+from __future__ import annotations
+
 
 
 class DriveError(Exception):

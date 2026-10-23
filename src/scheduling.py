@@ -1,36 +1,18 @@
-"""Scheduled-post preparation: proposed date = original date + 1 calendar day, same time.
+"""Proposed schedule calculation: original date + 1 calendar day, same wall-clock time.
 
-Safety rules (Story 4):
-- Nothing is submitted until the user explicitly confirms a proposal (``approve``).
-- No immediate-publish API action is ever used here. Facebook Reels are finished with
-  ``video_state=SCHEDULED`` (+ ``scheduled_publish_time``) or ``video_state=DRAFT`` – never
-  ``PUBLISHED``.
-- If a platform/account/content type cannot be scheduled (e.g. Instagram Reels through the
-  Instagram Content Publishing API, or a time outside Facebook's allowed window) the proposal is
-  marked ``unsupported`` with a clear message and left unsubmitted for manual scheduling.
-- Instagram and Facebook proposals are separate objects with separate status/results.
-
-Verify the current Graph API scheduling rules (allowed window, Reels support for
-``SCHEDULED``/``DRAFT``) in Meta's docs before going live; the window is configurable.
+This module only calculates dates. It never contacts any platform: a *proposed* schedule is
+a suggestion for the user, who schedules the post themselves in Instagram / Facebook.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
-from pathlib import Path
-from typing import Callable, Protocol
+from datetime import date, datetime, time, timedelta
 
-from src.models import Platform
-
-# ------------------------------------------------------------------ date logic
-MODE_SCHEDULE, MODE_DRAFT = "schedule", "draft"
-
-PROPOSED, APPROVED, SUBMITTING, SCHEDULED, DRAFT_SAVED, UNSUPPORTED, FAILED = (
-    "proposed", "approved", "submitting", "scheduled", "draft_saved", "unsupported", "failed")
-SKIPPED = "skipped"
-FINAL = {SCHEDULED, DRAFT_SAVED}
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo, ZoneInfoNotFoundError  # type: ignore
 
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july", "august", "september",
@@ -39,28 +21,38 @@ _MONTHS.update({k[:3]: v for k, v in list(_MONTHS.items())})
 _MONTHS["sept"] = 9
 
 
-def propose(original: datetime) -> datetime:
-    """Exactly one calendar day later, same wall-clock time (and same tzinfo).
-
-    Uses calendar-date arithmetic, so month-end, year-end and leap days are handled
-    (28 Feb 2024 -> 29 Feb 2024, 29 Feb 2024 -> 1 Mar 2024, 31 Dec -> 1 Jan) and the
-    time of day is never shifted, even across a DST change."""
-    next_day = original.date() + timedelta(days=1)
-    return datetime.combine(next_day, original.timetz())
-
-
 class ScheduleParseError(ValueError):
     pass
 
 
+def get_tz(name: str):
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ScheduleParseError(f"Unknown timezone '{name}'.") from exc
+
+
+def propose(original: datetime) -> datetime:
+    """Exactly one calendar day later with the identical wall-clock time and tzinfo.
+
+    Calendar arithmetic on the date only: 28 Feb 2024 -> 29 Feb 2024, 29 Feb -> 1 Mar,
+    31 Dec -> 1 Jan; the time is never shifted, even across a DST change."""
+    return datetime.combine(original.date() + timedelta(days=1), original.timetz())
+
+
+def to_local(dt: datetime, tz_name: str) -> datetime:
+    """Interpret naive datetimes as wall-clock time in the user's timezone."""
+    tz = get_tz(tz_name)
+    return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt.astimezone(tz)
+
+
 def parse_original(date_text: str, time_text: str = "", default_year: int | None = None,
                    tz=None) -> datetime:
-    """Parse an original date/time such as ('9 September', '10:30 AM'), ('2026-09-09 10:30')
-    or ('September 9, 2026', '22:15'). Missing year -> ``default_year`` (else current year)."""
+    """Parse ('9 September', '10:30 AM'), ('2026-09-09 10:30'), ('September 9, 2026', '22:15')."""
     text = f"{date_text or ''} {time_text or ''}".strip()
     if not text:
         raise ScheduleParseError("No original date was provided.")
-    s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", text.strip(), flags=re.I).replace(",", " ")
+    s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", text, flags=re.I).replace(",", " ")
     t, s = _extract_time(s)
     d = _extract_date(s, default_year or datetime.now().year)
     return datetime.combine(d, t, tzinfo=tz)
@@ -110,287 +102,16 @@ def fmt(dt: datetime | None) -> str:
     return f"{dt.day} {dt:%B %Y}, {dt:%I:%M %p}".replace(", 0", ", ")
 
 
-# ------------------------------------------------------------------ proposals
-@dataclass
-class ScheduleProposal:
-    video_id: str
-    filename: str
-    platform: Platform
-    caption: str              # final text (caption/description + hashtags)
-    original: datetime
-    proposed: datetime
-    mode: str = MODE_SCHEDULE  # schedule | draft
-    status: str = PROPOSED
-    message: str = ""
-    remote_id: str = ""
-    edited: bool = False      # proposed time changed by the user
-    confirmed_at: str = ""
-    history: list[str] = field(default_factory=list)
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return self.video_id, self.platform.value
-
-    @property
-    def submitted(self) -> bool:
-        return self.status in FINAL
+def to_iso(dt: datetime | None) -> str:
+    """Store wall-clock time without offset (timezone kept per workspace)."""
+    return dt.replace(tzinfo=None).isoformat(timespec="minutes") if dt else ""
 
 
-def build_proposal(video_id: str, filename: str, platform: Platform, caption: str,
-                   original: datetime, mode: str = MODE_SCHEDULE) -> ScheduleProposal:
-    return ScheduleProposal(video_id, filename, platform, caption, original, propose(original),
-                            mode=mode)
+def from_iso(text: str | None) -> datetime | None:
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=None)
+    except ValueError:
+        return None
 
-
-def edit_proposal(p: ScheduleProposal, new_proposed: datetime | None = None,
-                  mode: str | None = None, caption: str | None = None) -> None:
-    """User edit. Any change requires a fresh confirmation."""
-    if p.submitted:
-        raise ValueError("Already submitted – change it on the platform instead.")
-    if new_proposed is not None and new_proposed != p.proposed:
-        p.proposed, p.edited = new_proposed, True
-    if mode is not None:
-        p.mode = mode
-    if caption is not None:
-        p.caption = caption
-    if p.status in (APPROVED, UNSUPPORTED, FAILED):
-        p.status, p.message = PROPOSED, ""
-
-
-def approve(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
-    """Explicit user confirmation – the only way a proposal becomes submittable."""
-    if p.submitted or p.status == SKIPPED:
-        return
-    p.status = APPROVED
-    p.confirmed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    if audit:
-        audit.record(p, "approved")
-
-
-def skip(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
-    """Exclude from submission. Skipped proposals are never submitted."""
-    if p.submitted:
-        raise ValueError("Already submitted – change it on the platform instead.")
-    p.status, p.message = SKIPPED, "Skipped by user – nothing will be submitted."
-    if audit:
-        audit.record(p, "skipped")
-
-
-def unskip(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
-    if p.status == SKIPPED:
-        p.status, p.message = PROPOSED, ""
-        if audit:
-            audit.record(p, "unskipped")
-
-
-def can_retry(p: ScheduleProposal) -> bool:
-    return p.status in (FAILED, UNSUPPORTED)
-
-
-def retry(p: ScheduleProposal, audit: "AuditLog | None" = None) -> None:
-    """Return a failed/unsupported proposal to review; it must be approved again."""
-    if not can_retry(p):
-        return
-    p.status, p.message, p.confirmed_at = PROPOSED, "", ""
-    if audit:
-        audit.record(p, "retry_requested")
-
-
-class AuditLog:
-    """Append-only JSON-lines record of approvals, skips and actions taken."""
-
-    def __init__(self, path: Path | str):
-        self.path = Path(path)
-
-    def record(self, p: ScheduleProposal, event: str) -> dict:
-        import json
-        entry = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event,
-                 "video_id": p.video_id, "filename": p.filename, "platform": p.platform.value,
-                 "mode": p.mode, "original": p.original.isoformat(),
-                 "proposed": p.proposed.isoformat(), "status": p.status,
-                 "message": p.message, "remote_id": p.remote_id, "caption": p.caption}
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError:
-            pass  # auditing must never block or trigger a platform action
-        p.history.append(f"{entry['at']} {event}")
-        return entry
-
-    def entries(self) -> list[dict]:
-        import json
-        if not self.path.exists():
-            return []
-        out = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            try:
-                out.append(json.loads(line))
-            except ValueError:
-                continue
-        return out
-
-
-def review_row(rec, proposals: dict) -> dict:
-    """One read-only review row per video (no platform action)."""
-    from src.matching import response_number, trailing_number
-    ig, fb = proposals.get(Platform.INSTAGRAM.value), proposals.get(Platform.FACEBOOK.value)
-    ref = ig or fb
-
-    def body(platform):
-        c = rec.content.get(platform)
-        return (c.caption or c.description) if c else ""
-
-    def tags(platform):
-        c = rec.content.get(platform)
-        return c.hashtags if c else ""
-
-    def status(p):
-        return p.status if p else ("skipped" if rec.skipped else "no schedule")
-
-    return {
-        "Drive filename": rec.filename,
-        "Trailing #": trailing_number(rec.filename),
-        "Gemini #": response_number(rec.content_key),
-        "Instagram caption": body(Platform.INSTAGRAM),
-        "Instagram hashtags": tags(Platform.INSTAGRAM),
-        "Facebook description": body(Platform.FACEBOOK),
-        "Facebook hashtags": tags(Platform.FACEBOOK),
-        "Original": fmt(ref.original) if ref else "—",
-        "Proposed": fmt(ref.proposed) if ref else "—",
-        "Instagram status": status(ig),
-        "Facebook status": status(fb),
-    }
-
-
-# ------------------------------------------------------------------ platform schedulers
-@dataclass
-class ScheduleResult:
-    status: str          # scheduled | draft_saved | unsupported | failed
-    message: str
-    remote_id: str = ""
-
-
-class Scheduler(Protocol):
-    def submit(self, p: ScheduleProposal, path: Path) -> ScheduleResult: ...
-
-
-class UnsupportedScheduler:
-    """Used when a platform cannot schedule/draft through its API (never publishes)."""
-
-    def __init__(self, reason: str):
-        self.reason = reason
-
-    def submit(self, p: ScheduleProposal, path: Path) -> ScheduleResult:
-        return ScheduleResult(UNSUPPORTED, self.reason)
-
-
-INSTAGRAM_UNSUPPORTED = (
-    "Instagram: the Instagram Content Publishing API cannot schedule Reels or save them as drafts "
-    "(media_publish publishes immediately), so nothing was submitted. Schedule this Reel manually "
-    "in Meta Business Suite / Instagram using the proposed date and time.")
-
-
-def instagram_scheduler() -> UnsupportedScheduler:
-    return UnsupportedScheduler(INSTAGRAM_UNSUPPORTED)
-
-
-class FacebookReelsScheduler:
-    """Schedules (``video_state=SCHEDULED``) or drafts (``DRAFT``) a Page Reel. Never PUBLISHED."""
-
-    PLATFORM_KEY = "facebook_schedule"
-
-    def __init__(self, graph, page_id: str, page_token: str, store,
-                 min_lead: timedelta = timedelta(minutes=10),
-                 max_lead: timedelta = timedelta(days=29),
-                 now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
-        self.graph, self.page_id, self._token, self.store = graph, page_id, page_token, store
-        self.min_lead, self.max_lead, self.now = min_lead, max_lead, now
-
-    def submit(self, p: ScheduleProposal, path: Path) -> ScheduleResult:
-        from src.facebook_publisher import FacebookReelsPublisher, content_hash, validate_video
-        from src.job_store import FAILED as JOB_FAILED, Job
-        from src.meta_errors import MetaError
-
-        state = "SCHEDULED" if p.mode == MODE_SCHEDULE else "DRAFT"
-        when = p.proposed if p.proposed.tzinfo else p.proposed.astimezone()  # local -> aware
-        if p.mode == MODE_SCHEDULE:
-            lead = when - self.now()
-            if lead < self.min_lead or lead > self.max_lead:
-                return ScheduleResult(UNSUPPORTED, (
-                    f"Facebook can only schedule between {_td(self.min_lead)} and "
-                    f"{_td(self.max_lead)} ahead; {fmt(p.proposed)} is outside that window. "
-                    "Nothing was submitted – edit the date/time or save as draft."))
-
-        job = self.store.get(p.video_id, self.PLATFORM_KEY, self.page_id)
-        if job and job.status in (SCHEDULED, DRAFT_SAVED) and job.remote_video_id:
-            return ScheduleResult(job.status, "Already submitted earlier – not submitted again.",
-                                  job.remote_video_id)
-        try:
-            validate_video(path)
-            job = job or Job(p.video_id, self.PLATFORM_KEY, self.page_id)
-            job = self.store.save(job, status=SUBMITTING, content_hash=content_hash(p.caption),
-                                  attempts=job.attempts + 1, last_error="")
-            start = self.graph.request("POST", f"{self.page_id}/video_reels", self._token,
-                                       data={"upload_phase": "start"})
-            video_id = start.get("video_id")
-            if not video_id:
-                raise MetaError("Facebook did not return a video ID for the upload session.")
-            self.store.save(job, remote_video_id=video_id)
-            uploader = FacebookReelsPublisher(self.graph, self.page_id, self._token, self.store)
-            uploader._upload(video_id, Path(path))
-            data = {"upload_phase": "finish", "video_id": video_id, "video_state": state,
-                    "description": p.caption}
-            if state == "SCHEDULED":
-                data["scheduled_publish_time"] = str(int(when.timestamp()))
-            fin = self.graph.request("POST", f"{self.page_id}/video_reels", self._token,
-                                     data=data, retries=0)
-            if fin.get("success") is False:
-                raise MetaError("Facebook rejected the scheduling request.")
-        except MetaError as exc:
-            if job:
-                self.store.save(job, status=JOB_FAILED, last_error=str(exc))
-            return ScheduleResult(FAILED, f"Facebook: {exc} Nothing was published.")
-        final = SCHEDULED if state == "SCHEDULED" else DRAFT_SAVED
-        self.store.save(job, status=final)
-        msg = (f"Facebook Reel scheduled for {fmt(p.proposed)}. Facebook will publish it "
-               "automatically at that time unless you change it in Meta Business Suite."
-               if final == SCHEDULED else
-               "Facebook Reel saved as a draft – it stays unpublished until you publish it.")
-        return ScheduleResult(final, msg, video_id)
-
-
-def _td(d: timedelta) -> str:
-    return f"{d.days} days" if d.days else f"{int(d.total_seconds() // 60)} minutes"
-
-
-def submit_approved(proposals: list[ScheduleProposal], schedulers: dict[Platform, Scheduler],
-                    resolve_path: Callable[[ScheduleProposal], Path],
-                    audit: AuditLog | None = None) -> list[ScheduleProposal]:
-    """Submit ONLY approved proposals; each platform is handled and reported independently.
-    Skipped/proposed/failed items are never submitted."""
-    done = []
-    for p in proposals:
-        if p.status != APPROVED:
-            continue  # never submit without explicit confirmation
-        sched = schedulers.get(p.platform)
-        if sched is None:
-            p.status, p.message = UNSUPPORTED, f"{p.platform.value}: scheduling is not configured."
-            if audit:
-                audit.record(p, "submit_result")
-            done.append(p)
-            continue
-        p.status = SUBMITTING
-        try:
-            res = sched.submit(p, resolve_path(p))
-        except Exception as exc:  # isolate platforms from each other
-            from src.redaction import redact
-            res = ScheduleResult(FAILED, f"{p.platform.value}: {redact(exc)}")
-        p.status, p.message, p.remote_id = res.status, res.message, res.remote_id
-        if audit:
-            audit.record(p, "submit_result")
-        else:
-            p.history.append(
-                f"{datetime.now(timezone.utc).isoformat(timespec='seconds')} {res.status}")
-        done.append(p)
-    return done

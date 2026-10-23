@@ -45,7 +45,7 @@ def main(write: bool) -> int:
         if compiles(candidate, str(path)):
             fixed.append(path)
             if write:
-                path.write_text(candidate, encoding="utf-8", newline="\n")
+                path.write_text(candidate, encoding="utf-8")
         else:
             broken.append(path)
     for p in fixed:

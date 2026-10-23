@@ -25,18 +25,18 @@ def build_sample_gemini_text() -> str:
     for i, (en, hi) in enumerate(_PRODUCTS, start=1):
         tag = en.replace(" ", "").replace("-", "")
         fb_desc = "" if i == 7 else (
-            f"Aaj ka StylePick find: {en} 😍\n{hi} – budget mein best!\n\n"
+            f"Aaj ka fashion find: {en} 😍\n{hi} – budget mein best!\n\n"
             "Link comment mein 👇"
         )
         blocks.append(
-            f"""=== VIDEO: stylepick_{i:02d}.mp4 ===
+            f"""=== VIDEO: reel_{i:02d}.mp4 ===
 --- YouTube Shorts ---
 Hook: Ye {en} dekh ke sab poochenge – kahan se liya? 🤔
 Title: {en} under ₹999 😱 #Shorts
 Description: {hi} – trendy aur affordable! ✨
 Daily fashion finds ke liye subscribe karein.
-Hashtags: #StylePickFinds #{tag} #Shorts
-YouTube Tags: {en.lower()}, budget fashion, stylepick finds
+Hashtags: #DailyFinds #{tag} #Shorts
+YouTube Tags: {en.lower()}, budget fashion, daily finds
 On-screen Text: {hi} 👉 sirf ₹999
 Transcript: Doston, aaj ka find hai {en}!
 {hi} – quality zabardast, price kam.
@@ -46,13 +46,13 @@ Caption: {en} jo sabko pasand aayega 💖
 {hi} – perfect for every occasion ✨
 
 Save karo, share karo! 📌
-Hashtags: #StylePickFinds #{tag} #FashionReels #OOTD #देसीस्टाइल
+Hashtags: #DailyFinds #{tag} #FashionReels #OOTD #देसीस्टाइल
 On-screen Text: {hi} 👉 sirf ₹999
 Optimized Transcript: {en} under ₹999 – {hi}! Link bio mein 🔗
 --- Facebook Reels ---
-SEO Title: {en} – Best Budget Find | StylePick
+SEO Title: {en} – Best Budget Find | Daily Finds
 Description: {fb_desc}
-Hashtags: #StylePickFinds #{tag} #IndianFashion
+Hashtags: #DailyFinds #{tag} #IndianFashion
 """
         )
     return "\n".join(blocks)
@@ -65,8 +65,8 @@ SAMPLE_GEMINI_URL = "https://gemini.google.com/share/abc123def456"
 
 def mock_list_videos(folder_url: str) -> list[dict]:
     """Stand-in for DriveClient.list_videos. Includes one unmatched video."""
-    files = [{"id": f"vid{i:02d}", "name": f"stylepick_{i:02d}.mp4"} for i in range(1, 11)]
-    files[9]["name"] = "stylepick_extra_clip.mp4"  # will not match any content
+    files = [{"id": f"vid{i:02d}", "name": f"reel_{i:02d}.mp4"} for i in range(1, 11)]
+    files[9]["name"] = "reel_extra_clip.mp4"  # will not match any content
     return files
 
 

@@ -1,3 +1,5 @@
+> **Superseded (ReelFlow Studio):** automatic publishing was removed. Sections below about publishing, Meta apps or tokens are historical. See README.md.
+
 # Troubleshooting
 Logs are printed in the `run.bat` console window; tokens are masked as `***`, so logs are safe to share.
 

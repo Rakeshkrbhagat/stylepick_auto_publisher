@@ -121,7 +121,7 @@ class GoogleAuthManager:
                 port=0, open_browser=True, prompt="consent", timeout_seconds=300,
                 authorization_prompt_message="",
                 success_message="Google account connected. You can close this tab and return to "
-                                "StylePick.")
+                                "the app.")
         except Exception as exc:
             msg = str(exc).lower()
             if (any(s in msg for s in ("access_denied", "cancel", "timed out"))
@@ -133,6 +133,36 @@ class GoogleAuthManager:
         if not set(SCOPES) <= set(creds.scopes or SCOPES):
             raise AuthError("Google access was not granted for Drive (read-only). Please reconnect "
                             "and allow access.")
+        self._creds = creds
+        self._save(creds)
+
+    # ----- hosted (web redirect) flow -----
+    def _web_flow(self, redirect_uri: str, state: str | None = None):
+        from google_auth_oauthlib.flow import Flow
+
+        if not self.client_configured():
+            raise AuthError(f"OAuth client file not found at '{self.client_secrets_file}'.")
+        # Confidential "Web application" client: authenticated with its client secret, so no
+        # PKCE verifier has to be kept between the redirect and the callback (no storage).
+        return Flow.from_client_secrets_file(str(self.client_secrets_file), SCOPES, state=state,
+                                             redirect_uri=redirect_uri,
+                                             autogenerate_code_verifier=False)
+
+    def authorization_url(self, redirect_uri: str, state: str) -> str:
+        flow = self._web_flow(redirect_uri, state)
+        url, _ = flow.authorization_url(access_type="online", prompt="consent",
+                                        include_granted_scopes="true", state=state)
+        return url
+
+    def complete_web_flow(self, redirect_uri: str, state: str, code: str) -> None:
+        flow = self._web_flow(redirect_uri, state)
+        try:
+            flow.fetch_token(code=code)
+        except Exception as exc:
+            raise AuthError(f"Google sign-in failed: {redact(exc)}") from None
+        creds = flow.credentials
+        if not set(SCOPES) <= set(creds.scopes or SCOPES):
+            raise AuthError("Google access was not granted for Drive (read-only).")
         self._creds = creds
         self._save(creds)
 

@@ -1,9 +1,9 @@
 """Reusable parser for Gemini responses (shared URL, pasted text or imported file).
 
-Supports the StylePick format with YouTube Shorts, Instagram Reels and Facebook Reels
+Supports the numbered-response format with YouTube Shorts, Instagram Reels and Facebook Reels
 sections, in plain text or Gemini-style Markdown, e.g.:
 
-    === VIDEO: stylepick_01.mp4 ===          (also "## Video 1: x.mp4", "## Response 3")
+    === VIDEO: reel_01.mp4 ===          (also "## Video 1: x.mp4", "## Response 3")
     ### 1. YouTube Shorts 🎬                  (parsed for reference only – never published)
     **Hook:** ...
     ### INSTAGRAM REELS

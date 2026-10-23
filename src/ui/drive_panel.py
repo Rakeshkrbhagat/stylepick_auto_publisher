@@ -10,33 +10,38 @@ from src.drive_errors import DriveError
 from src.google_auth import GoogleAuthManager
 
 
-def render_google_account(auth: GoogleAuthManager) -> dict:
-    """Sidebar block. Returns {'connect': bool, 'disconnect': bool, 'mock': bool}."""
-    st.sidebar.subheader("Google Drive")
+def render_google_account(auth: GoogleAuthManager, auth_url: str | None = None) -> dict:
+    """Sidebar block for the signed-in user's own Google account.
+
+    ``auth_url`` (hosted deployments) renders a sign-in link; otherwise a local browser flow
+    button is shown. Returns {'connect': bool, 'disconnect': bool, 'mock': bool}."""
+    st.sidebar.subheader("Your Google Drive")
     mock = st.sidebar.toggle("Use sample Drive data (offline)", key="use_mock_drive",
-                             help="Use mock videos instead of your Google Drive.")
+                             help="Use sample videos instead of your Google Drive.")
     actions = {"connect": False, "disconnect": False, "mock": mock}
     if mock:
         st.sidebar.info("Sample mode – Google Drive is not contacted.")
         return actions
     if not auth.client_configured():
-        st.sidebar.warning(
-            f"OAuth client file missing: `{auth.client_secrets_file}`. See README → Google Drive setup."
-        )
-    connected = auth.is_connected()
-    if connected:
+        st.sidebar.warning("Google sign-in is not configured on this server. Ask the "
+                           "administrator to set GOOGLE_CLIENT_SECRETS_FILE, or use sample data.")
+        return actions
+    if auth.is_connected():
         email = st.session_state.get("google_email") or auth.account_email()
         st.session_state["google_email"] = email
-        st.sidebar.success(f"Connected: {email or 'Google account'}")
+        st.sidebar.success(f"Connected: {email or 'Google account'} (read-only)")
         actions["disconnect"] = st.sidebar.button("Disconnect Google account",
                                                   use_container_width=True)
     else:
         st.sidebar.error("Google account not connected")
-        actions["connect"] = st.sidebar.button(
-            "Connect Google account", type="primary", use_container_width=True,
-            disabled=not auth.client_configured(),
-            help="Opens your browser for Google sign-in (read-only Drive access).",
-        )
+        if auth_url:
+            st.sidebar.link_button("Connect Google account (read-only)", auth_url,
+                                   type="primary", use_container_width=True)
+            st.sidebar.caption("You will return here after granting read-only access.")
+        else:
+            actions["connect"] = st.sidebar.button(
+                "Connect Google account", type="primary", use_container_width=True,
+                help="Opens your browser for Google sign-in (read-only Drive access).")
     return actions
 
 

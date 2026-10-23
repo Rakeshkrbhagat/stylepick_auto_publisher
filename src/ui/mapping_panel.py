@@ -70,7 +70,7 @@ def render_mapping_panel(report: MatchReport, content_keys: list[str]) -> list[t
                 actions.append(("confirm", m.video_id, key) if key == m.content_key and key
                                else ("assign", m.video_id, key))
             if c3.button("⏭️ Skip", key=f"map_skip_{m.video_id}", use_container_width=True,
-                         help="Exclude this video from publishing"):
+                         help="Exclude this video from the review queue"):
                 actions.append(("skip", m.video_id))
 
         st.divider()

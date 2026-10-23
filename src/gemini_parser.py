@@ -128,7 +128,7 @@ def fetch_shared_conversation(url: str, http_get: Callable | None = None, timeou
 
         def http_get(u, timeout):  # noqa: E306
             return requests.get(u, timeout=timeout, allow_redirects=True, headers={
-                "User-Agent": "Mozilla/5.0 (StylePick Auto Publisher)",
+                "User-Agent": "Mozilla/5.0 (ReelFlow Studio)",
                 "Accept-Language": "en,hi;q=0.8",
             })
     try:

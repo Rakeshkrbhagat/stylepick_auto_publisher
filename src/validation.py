@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.drive_client import extract_folder_id
 from src.drive_errors import InvalidFolderUrlError
-from src.models import PUBLISHABLE_PLATFORMS, MatchStatus, Platform, Status, VideoRecord
+from src.models import MatchStatus, Platform, VideoRecord
 
 
 INSTAGRAM_CAPTION_LIMIT = 2200
@@ -50,7 +50,7 @@ def validate_sources(drive_url: str, gemini_url: str, has_text: bool, has_file: 
 
 def validate_record(rec: VideoRecord) -> list[str]:
     if rec.skipped:
-        return []  # explicitly excluded from publishing
+        return []  # explicitly excluded by the user
     errors: list[str] = []
     if rec.match_status == MatchStatus.NEEDS_CONFIRMATION:
         errors.append("Content mapping needs confirmation.")
@@ -61,7 +61,7 @@ def validate_record(rec: VideoRecord) -> list[str]:
         errors.append("No matching Gemini content found for this video filename.")
         return errors
     if not rec.selected_platforms:
-        errors.append("No publishing platform selected.")
+        errors.append("No target platform selected.")
     for p in rec.selected_platforms:
         c = rec.content.get(p)
         if not rec.has_caption(p):
@@ -79,13 +79,5 @@ def validate_record(rec: VideoRecord) -> list[str]:
 
 
 def revalidate(rec: VideoRecord) -> None:
-    """Refresh errors and reset non-final statuses to Ready/Pending."""
+    """Refresh validation errors (workflow status is derived from them)."""
     rec.errors = validate_record(rec)
-    for p in PUBLISHABLE_PLATFORMS:
-        current = rec.platform_status.get(p)
-        if current == Status.PUBLISHED:
-            continue
-        if rec.errors or rec.skipped:
-            rec.platform_status[p] = Status.PENDING
-        elif current not in (Status.FAILED, Status.RETRY_PENDING):
-            rec.platform_status[p] = Status.READY

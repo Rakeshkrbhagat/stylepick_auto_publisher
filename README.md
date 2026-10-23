@@ -1,197 +1,93 @@
-# StylePick Finds Auto Publisher
+# ReelFlow Studio
 
-A local tool that:
-1. Reads videos from a Google Drive folder URL.
-2. Reads captions/hashtags from a Gemini shared conversation URL (with paste/import fallback).
-3. Matches content to videos and previews/edits it.
-4. Publishes Reels to a Facebook Page and an Instagram Professional account via official Meta APIs.
-5. Tracks results and retries without duplicate posts.
+Paste a Google Drive folder link and a Gemini response, and the app shows each video with its
+matched **Instagram caption + hashtags**, **Facebook description + hashtags** (copy buttons)
+and a **Proposed Schedule Date/Time** (original date **+1 calendar day**, same time).
 
-## Current status
+**The app does not publish or schedule anything.** You upload and schedule each video yourself
+in the Instagram / Facebook apps. There's no database, no accounts, and no saved history.
+Results exist only in your browser session.
 
-- Dashboard UI – done.
-- Google Drive integration (OAuth, folder listing, selection, verified downloads) – done.
-- Gemini content ingestion (shared URL retrieval + paste/file fallback + parser) – done.
-- Video ↔ content matching with manual confirmation – done.
-- Facebook Page Reels publishing (opt-in "Live" toggle) – done.
-- Instagram Reels publishing (opt-in "Live" toggle) – done.
+## How it works
+1. **Connect Google account** (read-only Drive access) in the sidebar. You can also use
+   **Load sample data** to try the app without Google.
+2. Paste the Drive folder URL. Private folders work if your Google account can read them.
+3. Give the app the Gemini response in one of these ways:
+   - a share link (`https://share.gemini.google/...` or `https://gemini.google.com/share/...`)
+   - pasted text
+   - an uploaded `.txt`, `.md` or `.json` file
 
-## Google Drive setup (one-time, free)
+   If the app can't read a share link, paste the text instead.
+4. The app matches each video by the number at the end of its filename. For example,
+   `R-YT-10.mp4` → response 10 and `M-New-1.mov` → response 1. Numbers with several digits
+   work. Duplicate numbers, missing responses and videos without a number are flagged so you
+   can fix them. The app never guesses a match.
+5. The app copies text exactly as Gemini wrote it, keeping Hindi, emojis, hashtags and line
+   breaks. It never rewrites or translates. It ignores the YouTube Shorts section.
+6. The original date comes from one of these, in priority order:
+   - a date you set for that video
+   - the sidebar's default date
+   - the Drive file's modified time
 
-1. In [Google Cloud Console](https://console.cloud.google.com/) create a project and enable the **Google Drive API**.
-2. Configure the OAuth consent screen (External, add yourself as a test user).
-3. Create an **OAuth client ID → Desktop app** and download the JSON.
-4. Save it as `credentials/client_secret.json` (git-ignored) or set `GOOGLE_CLIENT_SECRETS_FILE` in `.env`.
-5. Run the app, turn off *Use sample Drive data*, click **Connect Google account** and sign in.
+   The proposed date is one calendar day later at the same time. Month-end, year-end and leap
+   years are handled.
 
-Notes:
-- Scope: `drive.readonly` – the minimum that can list/download from an existing folder chosen by URL.
-- Private folders work; public sharing is not required.
-- Tokens are stored in the OS keyring (Windows Credential Manager / macOS Keychain), never in the repo.
-- Supported videos: MP4 and MOV. Downloads are chunked, verified (size + MD5), retried and cleaned up
-  after `DOWNLOAD_RETENTION_HOURS`.
+## Environment variables
+| Variable | Required | Purpose |
+|---|---|---|
+| `GOOGLE_CLIENT_SECRETS_FILE` | yes (for Drive) | Path to the Google OAuth client JSON |
+| `GOOGLE_OAUTH_REDIRECT_URI` | hosted only | The app's public URL, e.g. `https://your-app.onrender.com/` |
+| `APP_NAME` | no | Display name (default `ReelFlow Studio`) |
+| `DEFAULT_TIMEZONE` | no | Used for converting Drive modified times (default `Asia/Kolkata`) |
+| `WORK_DIR` | no | Temporary folder (default `/tmp/reelflow_downloads`) |
 
-## Meta setup (Facebook + Instagram)
+You don't need a database, a persistent disk, a token-encryption key or any Meta credentials.
 
-> Verify the current Graph API version, permissions, Reels requirements and publishing limits in the
-> Meta docs (Graph API changelog, *Reels Publishing API*, *Instagram Content Publishing*) before going
-> live. The version is configurable via `META_GRAPH_VERSION`.
+## Google OAuth setup
+1. In Google Cloud Console, create a project and enable the **Google Drive API**.
+2. On the OAuth consent screen, add the scope `https://www.googleapis.com/auth/drive.readonly`.
+   While the app is in *Testing* mode, add every user as a test user.
+3. Create the OAuth client:
+   - **Render:** create a **Web application** client. Add your app URL, e.g.
+     `https://your-app.onrender.com/`, as an **Authorized redirect URI**. Use the exact URL,
+     including the trailing slash.
+   - **Local:** create a **Desktop app** client and save it as
+     `credentials/client_secret.json`. Leave `GOOGLE_OAUTH_REDIRECT_URI` empty.
+4. On Render, upload the JSON as a **Secret File** (e.g. `client_secret.json` → available at
+   `/etc/secrets/client_secret.json`). Then set:
+   - `GOOGLE_CLIENT_SECRETS_FILE=/etc/secrets/client_secret.json`
+   - `GOOGLE_OAUTH_REDIRECT_URI`
+5. Remove the old environment variables. These are no longer used: `META_*`,
+   `JOB_DB_PATH`, `DATABASE_PATH`, `TOKEN_ENCRYPTION_KEY`, `ALLOW_SIGNUP`. Also detach the
+   persistent disk if one was added only for this app.
 
-1. At [developers.facebook.com](https://developers.facebook.com/) create an app (type *Business*),
-   add **Facebook Login** and the **Instagram API (with Facebook Login)** product.
-2. In Facebook Login → Settings add the Valid OAuth Redirect URI `http://localhost:8765/`
-   (or your `META_REDIRECT_PORT`).
-3. Put `META_APP_ID` and `META_APP_SECRET` in `.env` (never commit it).
-4. In the sidebar click **Connect Facebook** and approve all permissions. In development mode only app
-   roles (admins/developers/testers) can log in; other users need Meta App Review.
-5. Facebook: pick your Page → **Use this Page** → turn on **Live Facebook publishing**.
-6. Instagram: pick the account → **Use this Instagram account** → turn on **Live Instagram publishing**.
+How tokens are handled:
+- The OAuth `state` is HMAC-signed and expires after 15 minutes.
+- The access token is kept only in the current session's memory and is never stored.
+- The app never asks Google for long-lived (offline) access. When the token expires, the app
+  asks you to reconnect.
+- **Disconnect** revokes the token.
 
-Both toggles are off by default; while off, that platform is simulated.
+Render start command (unchanged):
+`streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
 
-### Permissions & eligibility checks
-
-| Platform  | Permissions                                                                     |
-|-----------|---------------------------------------------------------------------------------|
-| Facebook  | `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`                 |
-| Instagram | `instagram_basic`, `instagram_content_publish`, `pages_show_list`, `pages_read_engagement` |
-
-Before each live batch the app validates the token via `/debug_token` and checks the granted
-permissions. Only Pages where your role includes `CREATE_CONTENT` are publishable. Instagram accounts
-are discovered through `instagram_business_account` on your Pages, so only **Professional (Business or
-Creator) accounts linked to a Page** are offered. Pages without one are listed with an explanation
-(personal accounts can't publish through the API). The 24-hour Instagram publishing quota
-(`content_publishing_limit`) is checked before uploading.
-
-### Facebook Reels flow (`src/facebook_publisher.py`)
-
-`POST /{page}/video_reels` (start) → binary upload to `rupload.facebook.com` →
-`POST /{page}/video_reels` (finish, `description` = Facebook description + hashtags) →
-poll `GET /{video-id}?fields=status,permalink_url`.
-
-### Instagram Reels flow (`src/instagram_publisher.py`)
-
-`POST /{ig-user}/media` (`media_type=REELS`, `upload_type=resumable`, `caption` = Instagram caption +
-hashtags) → binary upload to `rupload.facebook.com/ig-api-upload/...` → poll
-`GET /{container}?fields=status_code` until `FINISHED` → `POST /{ig-user}/media_publish` →
-`GET /{media-id}?fields=permalink`. The media ID and permalink are stored.
-
-Local checks: MP4/MOV, ≤ 300 MB, caption ≤ 2,200 characters, ≤ 30 hashtags and (when known)
-3 s – 15 min.
-
-### Duplicate protection
-
-Every (video, platform, account) job is stored in SQLite (`JOB_DB_PATH`) and saved before the
-non-idempotent publish call.
-- Already published → no API calls at all.
-- Facebook: an uncertain or processing job is only re-checked; a new upload happens only after a
-  definitive failure.
-- Instagram: on retry the existing container's `status_code` decides: `PUBLISHED` → reconcile the
-  media ID from recent posts (by caption); `FINISHED` → publish that same container;
-  `IN_PROGRESS` → keep polling; `ERROR`/`EXPIRED` → upload again.
-
-Errors are shown in the UI and history: expired/revoked tokens (code 190), missing permissions,
-rate limits (retried with backoff), unsupported content and failed processing.
-
-## Gemini content
-
-**Sources (priority order):** imported file (`.txt`, `.md`, `.json`) → pasted text → shared URL.
-Only public share links are fetched (anonymous HTTPS GET). Supported formats:
-`https://gemini.google.com/share/<id>` and `https://share.gemini.google/<id>` (the URL is fetched
-exactly as supplied). If the page is rendered with JavaScript,
-the app explains why it couldn't read it and asks you to paste the response or import a file.
-
-```text
-=== VIDEO: stylepick_01.mp4 ===        (also "## Video 1: stylepick_01.mp4")
---- YouTube Shorts ---
-Hook / Title / Description / Hashtags / YouTube Tags / On-screen Text / Transcript
---- Instagram Reels ---
-Reel Cover Title / Caption / Hashtags / On-screen Text / Optimized Transcript
---- Facebook Reels ---
-SEO Title / Description / Hashtags
+## Run & test locally
 ```
-
-Missing fields are flagged. Ambiguous fields are left empty and flagged, never guessed.
-
-## Matching
-
-Matching is deterministic, in this order: manual mapping → exact filename → Drive file ID → filename
-without extension → **trailing number**. Similar names, duplicate filenames and content claimed by
-several videos need you to confirm, correct or skip them. Invalid or unconfirmed records are left
-out of publishing. Text is copied exactly as written; your edits are marked and can be restored.
-
-### Trailing-number matching
-
-When the Gemini conversation is numbered (headers like `## Video 3`, `Response 3`, `Reel #3` or
-`Request No. 3`), each Drive video is matched to the response with the same number at the end of
-its filename, whatever the prefix: `R-YT-1.mp4` → response 1, `M-New-2.mp4` → response 2,
-`R-YT-10.mp4` → response 10 (never 1). Drive listing order and alphabetical order are never used.
-
-The mapping panel lists each filename with its video number and response number so you can check
-them before any post is prepared. It also reports:
-- several files ending in the same number → you confirm the correct file (the others are released)
-  or set an explicit mapping;
-- videos whose number has no Gemini response;
-- Gemini responses with no video;
-- videos without a trailing number (map them manually).
-
-## Run locally
-
-### Windows (recommended)
-1. Install Python 3.10+ from python.org (tick *Add python.exe to PATH*).
-2. Double-click `install.bat` (creates `.venv`, installs dependencies, creates `.env`).
-3. Fill in `.env` and add `credentials\client_secret.json` (see setup sections above).
-4. Double-click `run.bat` – the dashboard opens at `http://localhost:8501`.
-5. `run_tests.bat` runs the offline test suite.
-
-See `TROUBLESHOOTING.md` for common problems and `RELEASE.md` for permissions, approval
-dependencies, known limitations and the test report.
-
-Manual equivalent:
-```bat
-python -m venv .venv
-.venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
+python -m pytest -q
 ```
 
-### macOS / Linux
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
+## Troubleshooting
+| Problem | Fix |
+|---|---|
+| `redirect_uri_mismatch` | `GOOGLE_OAUTH_REDIRECT_URI` must exactly match an Authorized redirect URI (scheme, host, trailing slash). |
+| "Google sign-in is not configured" | The secret file path is wrong, or the file wasn't uploaded. |
+| `access_denied` / "access was not granted" | Add yourself as a test user, then allow Drive read-only access. |
+| "sign-in link expired or is invalid" | Click **Connect Google account** again and finish within 15 minutes. |
+| Folder not found / access denied | Check the URL. Make sure the connected Google account can open the folder. |
+| "Authorization expired" | Reconnect Google. Tokens are session-only, so this is expected after about 1 hour or a page reload. |
+| No supported videos | Only MP4/MOV files are listed. Other files are shown as ignored. |
+| Gemini link can't be read | Paste the response text or upload it as a file. |
+| Wrong or missing match | Use the mapping panel to choose the response, confirm it or skip the video. |
 
-Tests: `python -m pytest -q tests`. The live tests are opt-in. The Facebook one needs
-`META_TEST_PAGE_ID`/`TOKEN`/`VIDEO` and creates a **draft**. The Instagram one needs
-`META_TEST_IG_USER_ID`/`TOKEN`, `META_TEST_VIDEO` and `META_TEST_IG_PUBLISH=1`, and creates a
-**public** reel, so use a test account.
-
-## Project structure
-
-```text
-src/
-├── config.py               # settings from env/.env
-├── models.py               # VideoRecord, PlatformContent, statuses
-├── content_parser.py       # Gemini response parser
-├── gemini_parser.py        # Gemini shared-URL retrieval
-├── google_auth.py / drive_client.py / drive_errors.py / video_source.py
-├── matching.py             # video ↔ content matching
-├── validation.py
-├── meta_graph.py           # Graph API client
-├── meta_auth.py            # Facebook Login, token checks, Page + Instagram account selection
-├── meta_errors.py
-├── facebook_publisher.py   # FB Reels upload/publish/poll, idempotent
-├── instagram_publisher.py  # IG Reels container/upload/publish/poll, idempotent
-├── job_store.py            # SQLite publication records
-├── live_publisher.py       # routes each platform → live or mock
-├── publishing_service.py   # batch runner + mock publisher
-└── ui/                     # Streamlit components (drive, facebook, instagram, mapping panels)
-```
-
-## Cost and platform notes
-
-Everything runs locally, so there's no paid hosting. The Graph API is free to use, but rate limits,
-publishing quotas, App Review and account eligibility apply. Never commit passwords, tokens or app
-secrets.

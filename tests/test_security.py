@@ -11,7 +11,6 @@ import pytest
 
 from src.drive_errors import AuthExpiredError, NotConnectedError
 from src.google_auth import SCOPES, GoogleAuthManager, TokenStore
-from src.meta_auth import MetaAuthManager, MetaTokenStore, scopes_for
 from src.redaction import install_log_redaction, redact
 from src.secure_store import CredentialStoreError, JsonSecureStore, SecureStore
 
@@ -37,16 +36,6 @@ class MemoryKeyring:
 class PlaintextKeyring(MemoryKeyring):
     pass
 
-
-class FakeGraph:
-    version = "v23.0"
-
-    def __init__(self):
-        self.calls = []
-
-    def request(self, method, path, token=None, **kw):
-        self.calls.append((method, path))
-        return {}
 
 
 # ---------- secure storage ----------
@@ -98,18 +87,7 @@ def test_google_scope_is_readonly():
     assert SCOPES == ["https://www.googleapis.com/auth/drive.readonly"]
 
 
-def test_meta_scopes_limited_to_enabled_platforms():
-    fb = scopes_for(["facebook"])
-    assert not any(s.startswith("instagram") for s in fb)
-    assert "pages_manage_posts" in fb
 
-
-def test_meta_repr_hides_secret():
-    m = MetaAuthManager("1", "TOPSECRET", FakeGraph(), store=MetaTokenStore(MemoryKeyring()))
-    assert "TOPSECRET" not in repr(m)
-
-
-# ---------- disconnect & re-authorization ----------
 def test_google_not_connected_and_disconnect(tmp_path, monkeypatch):
     mgr = GoogleAuthManager(tmp_path / "missing.json", store=TokenStore(MemoryKeyring()))
     with pytest.raises(NotConnectedError):
@@ -128,16 +106,6 @@ def test_google_invalid_stored_token_forces_reauth(tmp_path):
         mgr.get_credentials()
     assert mgr.store.load() is None
 
-
-def test_meta_reauth_flag_and_disconnect():
-    graph = FakeGraph()
-    m = MetaAuthManager("1", "s", graph, store=MetaTokenStore(MemoryKeyring()))
-    m._save({"user_token": "EAAtoken"})
-    m.mark_needs_reauth("expired")
-    assert m.is_connected() and m.needs_reauth()
-    m.disconnect()
-    assert not m.is_connected()
-    assert ("DELETE", "me/permissions") in graph.calls
 
 
 # ---------- source control hygiene ----------

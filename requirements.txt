@@ -6,5 +6,6 @@ keyring>=25.0,<26.0
 google-auth>=2.30,<3.0
 google-auth-oauthlib>=1.2,<2.0
 google-api-python-client>=2.130,<3.0
+tzdata>=2024.1
 pytest>=8.0
 

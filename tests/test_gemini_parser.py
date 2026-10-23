@@ -13,7 +13,7 @@ from src.validation import validate_gemini_url, validate_sources
 
 MARKDOWN_RESPONSE = """Here is the content for your videos! 🎉
 
-## Video 1: stylepick_01.mp4
+## Video 1: reel_01.mp4
 
 ### 1. YouTube Shorts 🎬
 **Hook:** Ruko! Ye kurti dekhe bina mat jao 😱
@@ -21,7 +21,7 @@ MARKDOWN_RESPONSE = """Here is the content for your videos! 🎉
 **Description:**
 Budget mein best kurti ✨
 Link description mein 👇
-* **Hashtags:** #StylePickFinds #Kurti #Shorts
+* **Hashtags:** #DailyFinds #Kurti #Shorts
 * **YouTube Tags:** kurti, budget kurti, फ्लोरल कुर्ती
 **On-Screen Text:** सिर्फ ₹999 🔥
 **Transcript:**
@@ -37,7 +37,7 @@ Ye kurti sabko pasand aayegi 💖
 हर occasion के लिए perfect ✨
 
 Save karo 📌
-**Hashtags:** #StylePickFinds #Kurti #OOTD #देसीस्टाइल
+**Hashtags:** #DailyFinds #Kurti #OOTD #देसीस्टाइल
 **On-Screen Text (overlay):** सिर्फ ₹999 👉
 **Optimized Transcript:** Kurti under ₹999! Link bio mein 🔗
 
@@ -45,13 +45,13 @@ Save karo 📌
 **SEO Title:** Floral Kurti Under ₹999 | Budget Fashion
 **Description:** फ्लोरल कुर्ती – budget mein best 😍
 Comment "LINK" for details 👇
-**Hashtags:** #StylePickFinds #IndianFashion
+**Hashtags:** #DailyFinds #IndianFashion
 """
 
 
 def test_markdown_response_all_fields():
     r = parse_gemini_response(MARKDOWN_RESPONSE)
-    v = r.content["stylepick_01.mp4"]
+    v = r.content["reel_01.mp4"]
     yt, ig, fb = v[Platform.YOUTUBE], v[Platform.INSTAGRAM], v[Platform.FACEBOOK]
     assert yt.hook.startswith("Ruko!") and "फ्लोरल कुर्ती" in yt.title
     assert yt.description == "Budget mein best kurti ✨\nLink description mein 👇"
@@ -63,17 +63,17 @@ def test_markdown_response_all_fields():
     assert ig.on_screen_text == "सिर्फ ₹999 👉" and ig.transcript.startswith("Kurti")
     assert fb.seo_title.startswith("Floral Kurti")
     assert fb.description == 'फ्लोरल कुर्ती – budget mein best 😍\nComment "LINK" for details 👇'
-    assert fb.hashtags == "#StylePickFinds #IndianFashion"
+    assert fb.hashtags == "#DailyFinds #IndianFashion"
     assert not [i for i in r.issues if i.severity == "error"]
-    assert not [i for i in r.issues if i.video == "stylepick_01.mp4"]
+    assert not [i for i in r.issues if i.video == "reel_01.mp4"]
 
 
 def test_sample_ten_videos():
     r = parse_gemini_response(SAMPLE_GEMINI_TEXT)
     assert len(r.content) == 10
-    ig = r.content["stylepick_01.mp4"][Platform.INSTAGRAM]
+    ig = r.content["reel_01.mp4"][Platform.INSTAGRAM]
     assert "💖" in ig.caption and "\n\n" in ig.caption and ig.transcript
-    missing = [i for i in r.issues if i.video == "stylepick_07.mp4"]
+    missing = [i for i in r.issues if i.video == "reel_07.mp4"]
     assert [i.field for i in missing] == ["description"]
 
 
@@ -126,7 +126,7 @@ def test_detect_platform(line, plat):
 
 
 @pytest.mark.parametrize("line, key", [
-    ("=== VIDEO: stylepick_01.mp4 ===", "stylepick_01.mp4"), ("## Video 3", "Video 3"),
+    ("=== VIDEO: reel_01.mp4 ===", "reel_01.mp4"), ("## Video 3", "Video 3"),
     ("**Video 2 – my clip.MOV**", "my clip.MOV"), ("Video dekho!", None),
     ("## Response 10", "Video 10"), ("**Response 1:**", "Video 1"), ("Reel #02", "Video 2"),
     ("### Request No. 7", "Video 7"), ("**Reel Cover Title:** Kurti", None),
@@ -138,7 +138,7 @@ def test_detect_video(line, key):
 
 def test_results_feed_caption_matching():
     content = parse_gemini_response(MARKDOWN_RESPONSE).content
-    recs = build_records([{"id": "x", "name": "StylePick_01.MP4"}], content)
+    recs = build_records([{"id": "x", "name": "Reel_01.MP4"}], content)
     assert recs[0].content[Platform.INSTAGRAM].cover_title
 
 
@@ -212,7 +212,7 @@ def test_fetch_success_from_html():
         f"<p>{line}</p>" for line in MARKDOWN_RESPONSE.splitlines()) + "</body></html>"
     text = fetch_shared_conversation(SHARE, http_get=lambda u, timeout: Resp(200, page))
     r = parse_gemini_response(text)
-    assert r.content["stylepick_01.mp4"][Platform.INSTAGRAM].cover_title == "Kurti Under ₹999 🔥"
+    assert r.content["reel_01.mp4"][Platform.INSTAGRAM].cover_title == "Kurti Under ₹999 🔥"
 
 
 def test_fetch_js_rendered_page_gives_fallback():

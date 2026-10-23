@@ -1,715 +1,303 @@
-"""StylePick Finds Auto Publisher – Streamlit dashboard.
+"""ReelFlow Studio – prepare reel captions and proposed schedule dates (no publishing).
 
-Google Drive: real (OAuth) or sample mode. Gemini: shared URL with paste/file fallback.
-Matching: deterministic filename/ID matching with manual confirmation.
-Publishing: bulk coordinator → Facebook Page Reels / Instagram Reels (live, opt-in) or simulated.
-History: every attempt persisted in SQLite; statuses survive restarts; duplicate protection.
-Security: tokens only in the OS credential vault; logs/errors redacted; guided re-authorization.
+Flow: connect Google (read-only) → paste Drive folder URL + Gemini response → videos are
+matched by trailing number → Instagram/Facebook text extracted verbatim → proposed date =
+original + 1 calendar day (same time). Everything lives in this browser session only: no
+database, no accounts, no saved history. Nothing is ever published or scheduled.
 
 Run: streamlit run app.py
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
+from datetime import date, datetime, time
 
 from src.redaction import install_log_redaction
 
 install_log_redaction()  # before anything else logs
 
 import streamlit as st  # noqa: E402
+import streamlit.components.v1 as components  # noqa: E402
 
+from src import oauth_state, scheduling  # noqa: E402
 from src.config import settings  # noqa: E402
-from src.content_parser import ParseResult, parse_gemini_response, parse_uploaded_result  # noqa: E402
+from src.content_parser import parse_gemini_response, parse_uploaded_result  # noqa: E402
 from src.drive_client import cleanup_work_dir  # noqa: E402
-from src.drive_errors import AuthExpiredError, DriveError, NotConnectedError  # noqa: E402
-from src.facebook_publisher import FacebookReelsPublisher  # noqa: E402
+from src.drive_errors import AuthError, AuthExpiredError, DriveError, NotConnectedError  # noqa: E402
 from src.gemini_parser import GeminiRetrievalError, fetch_shared_conversation  # noqa: E402
 from src.google_auth import GoogleAuthManager  # noqa: E402
-from src.history_store import SIMULATED, HistoryStore, HistoryStoreError  # noqa: E402
-from src.instagram_publisher import InstagramReelsPublisher  # noqa: E402
-from src.job_store import PUBLISHED, REMOTE_PENDING, JobStore  # noqa: E402
-from src.live_publisher import RoutingPublisher  # noqa: E402
-from src.matching import confirm_token, match_videos, stem  # noqa: E402
-from src.meta_auth import MetaAuthManager  # noqa: E402
-from src.meta_errors import MetaError, MetaTokenExpiredError, MetaUnsupportedContentError  # noqa: E402
-from src.meta_graph import GraphClient  # noqa: E402
-from src.mock_data import SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT, SAMPLE_GEMINI_URL  # noqa: E402
-from src.models import PUBLISHABLE_PLATFORMS, Platform, Status  # noqa: E402
-from src.publishing_service import MockPublisher  # noqa: E402
+from src.matching import confirm_token, match_videos  # noqa: E402
+from src.mock_data import SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT  # noqa: E402
 from src.redaction import redact  # noqa: E402
-from src.publishing_coordinator import ACTIVE, PublishingCoordinator, restore_status, summarize  # noqa: E402
-from src import scheduling  # noqa: E402
-from src.ui.schedule_panel import (  # noqa: E402
-    render_proposal_editor, render_review_table, render_schedule_table)
-from src.ui import batch_panel  # noqa: E402
+from src.results import build_result, drive_preview_link, summary_row  # noqa: E402
 from src.ui import components as ui  # noqa: E402
 from src.ui import drive_panel  # noqa: E402
-from src.ui.facebook_panel import reconnect_facebook, render_facebook_account  # noqa: E402
-from src.ui.history_panel import render_history_panel  # noqa: E402
-from src.ui.instagram_panel import render_instagram_account  # noqa: E402
 from src.ui.mapping_panel import render_mapping_panel  # noqa: E402
-from src.validation import revalidate, validate_sources  # noqa: E402
+from src.validation import validate_sources  # noqa: E402
 from src.video_source import GoogleDriveSource, MockDriveSource, sync_records  # noqa: E402
 
-st.set_page_config(page_title=settings.app_name, page_icon="📹", layout="wide")
-
-# ---------- session state ----------
+st.set_page_config(page_title=settings.app_name, page_icon=settings.app_icon, layout="wide")
 ss = st.session_state
-ss.setdefault("records", [])
-ss.setdefault("history", [])
-ss.setdefault("publisher", MockPublisher(delay=0.05))
+
 ss.setdefault("flash", None)
 ss.setdefault("content", {})
 ss.setdefault("parse_result", None)
 ss.setdefault("content_source", "")
 ss.setdefault("drive_listing", None)
-ss.setdefault("drive_url_loaded", "")
-ss.setdefault("drive_selected", {})
-ss.setdefault("download_state", {})
 ss.setdefault("drive_error", None)
+ss.setdefault("records", [])
 ss.setdefault("match_overrides", {})
 ss.setdefault("match_confirmed", set())
 ss.setdefault("match_skipped", set())
-ss.setdefault("batch_jobs", [])
-ss.setdefault("batch_started", False)
-ss.setdefault("retryable", {})
+ss.setdefault("originals", {})        # video_id -> datetime override (session only)
+ss.setdefault("user_confirmed", {})   # (video_id, platform) -> True when the user says so
 ss.setdefault("use_mock_drive", not settings.google_client_secrets_file.is_file())
 if "auth" not in ss:
-    ss.auth = GoogleAuthManager(settings.google_client_secrets_file)
-    cleanup_work_dir(settings.work_dir, settings.download_retention_hours)
-if "meta_auth" not in ss:
-    ss.graph = GraphClient(settings.meta_graph_version)
-    ss.meta_auth = MetaAuthManager(settings.meta_app_id, settings.meta_app_secret, ss.graph,
-                                   redirect_port=settings.meta_redirect_port,
-                                   platforms=settings.meta_platforms)
-    ss.job_store = JobStore(settings.job_db_path)
-if "history_store" not in ss:
-    try:
-        ss.history_store = HistoryStore(settings.job_db_path)
-        ss.history_error = None
-        if ss.history_store.recovered:
-            ss.flash = ("warning", f"{ss.history_store.recovered} publishing attempt(s) were "
-                                   "interrupted last time. They are marked 'uncertain' and will be "
-                                   "verified before any retry.")
-    except HistoryStoreError as exc:
-        ss.history_store, ss.history_error = None, str(exc)
+    # Token lives only in this session's memory – never written to disk or a database.
+    ss.auth = GoogleAuthManager(settings.google_client_secrets_file,
+                                store=oauth_state.SessionTokenStore(ss))
+    cleanup_work_dir(settings.work_dir, 1)
+
+
+def _state_key() -> bytes:
+    return oauth_state.signing_key(settings.google_client_secrets_file)
+
+
+# ---------- Google OAuth web callback ----------
+params = st.query_params
+if "code" in params or "error" in params:
+    if "error" in params:
+        ss.flash = ("warning", "Google access was not granted. Connect again and allow "
+                               "read-only Drive access to use private folders.")
+    else:
+        try:
+            if not oauth_state.verify_state(_state_key(), params.get("state", "")):
+                raise AuthError("The Google sign-in link expired or is invalid. Try again.")
+            ss.auth.complete_web_flow(settings.google_redirect_uri, params.get("state"),
+                                      params.get("code"))
+            ss.flash = ("success", "Google Drive connected (read-only). Paste your folder URL.")
+        except (DriveError, ValueError) as exc:
+            ss.flash = ("error", str(exc))
+    st.query_params.clear()
 
 # ---------- sidebar ----------
 with st.sidebar:
     st.header("⚙️ Options")
     if st.button("Load sample data", use_container_width=True):
-        ss.drive_url, ss.gemini_url, ss.gemini_text = SAMPLE_DRIVE_URL, SAMPLE_GEMINI_URL, SAMPLE_GEMINI_TEXT
-        ss.use_mock_drive = True
-        st.toast("Sample inputs filled. Click 'Check Videos & Captions'.")
-    st.download_button("Download sample caption file", SAMPLE_GEMINI_TEXT.encode("utf-8"),
-                       file_name="sample_gemini_captions.txt", use_container_width=True)
-    if st.button("Reset session", use_container_width=True,
-                 help="Clears the current session. Saved publishing history is kept."):
-        for k in ("records", "history", "drive_listing", "drive_selected", "download_state",
-                  "drive_error", "content", "parse_result", "match_overrides", "match_confirmed",
-                  "match_skipped", "batch_jobs", "batch_started", "retryable"):
+        ss.drive_url, ss.gemini_text, ss.use_mock_drive = SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT, True
+        st.toast("Sample inputs filled. Click 'Get videos & captions'.")
+    if st.button("Clear results", use_container_width=True):
+        for k in ("records", "drive_listing", "drive_error", "content", "parse_result",
+                  "match_overrides", "match_confirmed", "match_skipped", "originals",
+                  "user_confirmed"):
             ss.pop(k, None)
-        ss.publisher = MockPublisher(delay=0.05)
         st.rerun()
 
+auth_url = None
+if settings.google_redirect_uri and not ss.use_mock_drive and ss.auth.client_configured() \
+        and not ss.auth.is_connected():
+    try:
+        auth_url = ss.auth.authorization_url(settings.google_redirect_uri,
+                                             oauth_state.make_state(_state_key()))
+    except (DriveError, ValueError) as exc:
+        st.sidebar.error(f"Google sign-in is misconfigured: {redact(exc)}")
 
-def connect_google() -> None:
+g = drive_panel.render_google_account(ss.auth, auth_url)
+if g["connect"]:
     with st.spinner("Waiting for Google sign-in in your browser…"):
         try:
             ss.auth.connect()
-            ss.drive_error = None
-            ss.flash = ("success", "Google account connected.")
+            ss.flash = ("success", "Google account connected (read-only).")
         except DriveError as exc:
             ss.flash = ("error", str(exc))
     st.rerun()
-
-
-g = drive_panel.render_google_account(ss.auth)
-if g["connect"]:
-    connect_google()
 if g["disconnect"]:
     ss.auth.disconnect()
-    ss.pop("google_email", None)
-    ss.drive_listing, ss.records = None, []
-    ss.flash = ("info", "Google account disconnected: access revoked and token removed from this "
-                        "computer.")
-    st.rerun()
-fb = render_facebook_account(ss.meta_auth)
-if not ss.meta_auth.is_connected():
-    for k in ("ig_accounts", "ig_notes", "ig_live"):
+    for k in ("google_email", "drive_listing", "records"):
         ss.pop(k, None)
-meta_reauth = ss.meta_auth.is_connected() and ss.meta_auth.needs_reauth()
-ig = render_instagram_account(ss.meta_auth) if not meta_reauth else {"live": False, "account": None}
+    ss.flash = ("info", "Google account disconnected and access revoked.")
+    st.rerun()
 
 source = MockDriveSource() if g["mock"] else GoogleDriveSource(ss.auth, settings.work_dir)
 
-
-def selected_videos():
-    lst = ss.drive_listing
-    return [v for v in lst.videos if ss.drive_selected.get(v.id, True)] if lst else []
-
-
-def account_for(platform: Platform) -> tuple[str, str]:
-    if platform == Platform.FACEBOOK and fb["live"] and fb["page"]:
-        return fb["page"].id, "live"
-    if platform == Platform.INSTAGRAM and ig["live"] and ig["account"]:
-        return ig["account"].id, "live"
-    return SIMULATED, SIMULATED
-
-
-def apply_stored_status() -> None:
-    if ss.history_store is not None:
-        try:
-            ss.retryable.update(restore_status(ss.records, ss.history_store, account_for))
-        except HistoryStoreError as exc:
-            st.error(str(exc))
-    live = {Platform.FACEBOOK: fb["page"].id if fb["page"] else None,
-            Platform.INSTAGRAM: ig["account"].id if ig["account"] else None}
-    for platform, account_id in live.items():
-        if not account_id:
-            continue
-        for rec in ss.records:
-            job = ss.job_store.get(rec.video_id, platform.value.lower(), account_id)
-            if not job:
-                continue
-            if job.status == PUBLISHED:
-                rec.platform_status[platform] = Status.PUBLISHED
-            elif (job.status in REMOTE_PENDING
-                  and rec.platform_status.get(platform) != Status.PUBLISHED):
-                rec.platform_status[platform] = Status.PROCESSING
-
-
-def resync() -> None:
-    ss.records = sync_records(ss.records, selected_videos(), ss.content, ss.match_overrides,
-                              ss.match_confirmed, ss.match_skipped)
-    apply_stored_status()
-
-
-def load_folder(url: str) -> bool:
-    try:
-        with st.spinner("Reading Google Drive folder…"):
-            listing = source.list_videos(url)
-    except DriveError as exc:
-        ss.drive_error = exc
-        return False
-    ss.drive_error, ss.drive_listing, ss.drive_url_loaded = None, listing, url
-    ss.drive_selected = {v.id: ss.drive_selected.get(v.id, True) for v in listing.videos}
-    ss.download_state = {k: v for k, v in ss.download_state.items() if k in ss.drive_selected}
-    resync()
-    return True
-
-
-def load_gemini(form: dict) -> tuple[ParseResult | None, str]:
-    if form["upload"] is not None:
-        return parse_uploaded_result(form["upload"].name, form["upload"].getvalue()), \
-            f"file '{form['upload'].name}'"
-    if form["text"].strip():
-        return parse_gemini_response(form["text"]), "pasted text"
-    with st.spinner("Retrieving Gemini shared conversation…"):
-        text = fetch_shared_conversation(form["gemini_url"])
-    return parse_gemini_response(text), "Gemini shared URL"
-
-
-def resolve_video_path(rec):
-    if g["mock"]:
-        raise MetaUnsupportedContentError(
-            "Live publishing needs real Google Drive videos – sample Drive mode is on.")
-    video = next((v for v in (ss.drive_listing.videos if ss.drive_listing else [])
-                  if v.id == rec.video_id), None)
-    if video is None:
-        raise MetaUnsupportedContentError(f"Drive file for '{rec.filename}' not found.")
-    try:
-        path = source.download(video)
-    except (AuthExpiredError, NotConnectedError) as exc:
-        ss.drive_error = exc
-        raise MetaUnsupportedContentError(f"Google authorization needed: {exc}") from exc
-    except DriveError as exc:
-        raise MetaUnsupportedContentError(f"Could not download '{rec.filename}': {exc}") from exc
-    ss.download_state[video.id] = ("✅ Downloaded & verified", str(path))
-    return path, None
-
-
-def current_publisher(platforms: set[Platform]):
-    fb_pub = ig_pub = None
-    if Platform.FACEBOOK in platforms and fb["live"] and fb["page"]:
-        page = ss.meta_auth.page_for_publishing()
-        fb_pub = FacebookReelsPublisher(ss.graph, page.id, page.access_token, ss.job_store,
-                                        poll_timeout_s=settings.fb_poll_timeout_s)
-    if Platform.INSTAGRAM in platforms and ig["live"] and ig["account"]:
-        acc = ss.meta_auth.instagram_for_publishing()
-        ig_pub = InstagramReelsPublisher(ss.graph, acc.id, acc.access_token, ss.job_store,
-                                         poll_timeout_s=settings.fb_poll_timeout_s)
-        ig_pub.check_quota()
-    if not (fb_pub or ig_pub):
-        return ss.publisher
-    return RoutingPublisher(fb_pub, resolve_video_path, ss.publisher, instagram=ig_pub)
-
-
-def mode_text() -> str:
-    return " · ".join([
-        f"Facebook {'LIVE → ' + fb['page'].name if fb['live'] else 'simulated'}",
-        f"Instagram {'LIVE → ' + ig['account'].label if ig['live'] else 'simulated'}"])
-
-
-def prepare(jobs) -> None:
-    ss.batch_jobs, ss.batch_started, ss.confirm_batch = jobs, False, False
-    if ss.history_store is not None and jobs:
-        try:
-            n = PublishingCoordinator.mark_duplicates(jobs, ss.history_store, account_for)
-        except HistoryStoreError as exc:
-            n = 0
-            ss.flash = ("error", str(exc))
-        if n:
-            ss.flash = ("warning", f"⚠️ {n} job(s) were already published before and were held back "
-                                   "as duplicates. Review them below.")
-
-
-def run_jobs(jobs) -> None:
-    active = [j for j in jobs if j.status in ACTIVE]
-    if not active:
-        ss.flash = ("warning", "Nothing to publish – no pending jobs.")
-        return
-    if ss.history_store is None:
-        ss.flash = ("error", "Publishing is disabled because the history database is unavailable "
-                             f"({ss.history_error}). Posts would not be tracked.")
-        return
-    try:
-        publisher = current_publisher({j.platform for j in active})
-    except MetaTokenExpiredError as exc:
-        ss.meta_auth.mark_needs_reauth(str(exc))
-        ss.flash = ("error", f"🔑 {redact(exc)} Click 'Reconnect Facebook' in the sidebar, then "
-                             "start again. Nothing was published.")
-        return
-    except MetaError as exc:
-        ss.flash = ("error", f"Publishing blocked before start: {redact(exc)}")
-        return
-    coord = PublishingCoordinator(publisher, ss.history, store=ss.history_store,
-                                  account_for=account_for)
-    holder = st.empty()
-
-    def on_update(job, summary):
-        with holder.container():
-            st.caption(f"{job.filename} → {job.platform.value}: {job.status}")
-            batch_panel.render_summary(summary)
-
-    s = coord.run(jobs, ss.records, on_update)
-    for j in jobs:
-        if j.status in ("failed", "published", "processing"):
-            ss.retryable[(j.video_id, j.platform.value)] = j.retryable
-    msg = (f"Batch finished ({mode_text()}): {s.published} published, {s.processing} awaiting "
-           f"confirmation, {s.failed} failed, {s.deferred} deferred, {s.cancelled} cancelled.")
-    if coord.auth_blocked:
-        ss.meta_auth.mark_needs_reauth("Token rejected during publishing.")
-        msg += (" 🔑 Authorization expired for " + ", ".join(p.value for p in coord.auth_blocked)
-                + " – reconnect Facebook, then use Retry Failed. Successful posts are kept.")
-    ss.flash = ("success" if not (s.failed or s.processing or s.deferred) else "warning", msg)
-
-
-ui.render_header(settings.app_name)
-if ss.history_store is None:
-    st.error(f"Publishing history unavailable – publishing is disabled. {ss.history_error}")
-
-# ---------- re-authorization banners ----------
-if meta_reauth:
-    b1, b2 = st.columns([4, 1])
-    b1.error("🔑 Your Facebook/Instagram authorization expired or was revoked. Live publishing is "
-             "paused; nothing will be posted until you reconnect. Pending posts are kept and "
-             "verified before any retry.")
-    if b2.button("Reconnect Facebook", type="primary", key="banner_fb"):
-        reconnect_facebook(ss.meta_auth)
-if isinstance(ss.drive_error, (AuthExpiredError, NotConnectedError)) and not g["mock"]:
-    b1, b2 = st.columns([4, 1])
-    b1.error(f"🔑 {ss.drive_error}")
-    if b2.button("Reconnect Google", type="primary", key="banner_google",
-                 disabled=not ss.auth.client_configured()):
-        connect_google()
-
-if fb["live"] or ig["live"]:
-    st.warning(f"🔴 Live publishing is ON – {mode_text()}")
-if ss.flash:
-    getattr(st, ss.flash[0])(ss.flash[1])
-    ss.flash = None
-
-# ---------- source input ----------
-form = ui.render_source_inputs()
-if form:
-    errors = validate_sources(form["drive_url"], form["gemini_url"],
-                              bool(form["text"].strip()), form["upload"] is not None)
-    for e in errors:
-        st.error(e)
-    if not errors:
-        result = None
-        try:
-            result, label = load_gemini(form)
-        except GeminiRetrievalError as exc:
-            st.warning(f"**Could not retrieve the Gemini conversation.** {exc}")
-        except Exception as exc:  # malformed file etc.
-            st.error(f"Could not read caption content: {redact(exc)}")
-        if result is not None:
-            if not result.has_content:
-                st.error("No video sections found in the Gemini content. Expected platform sections "
-                         "(YouTube Shorts / Instagram Reels / Facebook Reels) under headers like "
-                         "`=== VIDEO: filename.mp4 ===`.")
-            else:
-                ss.content, ss.parse_result, ss.content_source = result.content, result, label
-                ss.records, ss.batch_jobs, ss.batch_started = [], [], False
-                ss.match_overrides, ss.match_confirmed, ss.match_skipped = {}, set(), set()
-                if load_folder(form["drive_url"]):
-                    records = ss.records
-                    done = sum(1 for r in records for p in PUBLISHABLE_PLATFORMS
-                               if r.platform_status.get(p) == Status.PUBLISHED)
-                    st.success(f"Loaded {len(records)} videos; {sum(r.is_valid for r in records)} "
-                               f"valid" + (f"; {done} platform post(s) already published earlier."
-                                           if done else "."))
-
-if ss.parse_result:
-    ui.render_parse_issues(ss.parse_result.issues, ss.content_source)
-
-# ---------- Google Drive videos ----------
-if not isinstance(ss.drive_error, (AuthExpiredError, NotConnectedError)):
-    if drive_panel.render_drive_error(ss.drive_error, key="retry_list"):
-        load_folder(ss.get("drive_url", "") or ss.drive_url_loaded)
-        st.rerun()
-
-if ss.drive_listing:
-    st.subheader("Google Drive videos")
-    new_sel = drive_panel.render_video_selection(ss.drive_listing, ss.drive_selected,
-                                                 ss.download_state)
-    if new_sel != ss.drive_selected:
-        ss.drive_selected = new_sel
-        resync()
-        st.rerun()
-    d1, d2, d3 = st.columns(3)
-    if d1.button("🔄 Refresh folder", use_container_width=True):
-        load_folder(ss.drive_url_loaded)
-        st.rerun()
-    sel = selected_videos()
-    failed_ids = {k for k, (s, _) in ss.download_state.items() if "Failed" in s}
-    dl_targets = None
-    if d2.button(f"⬇️ Download selected ({len(sel)})", disabled=not sel, use_container_width=True):
-        dl_targets = sel
-    if d3.button("🔁 Retry failed downloads", disabled=not failed_ids, use_container_width=True):
-        dl_targets = [v for v in sel if v.id in failed_ids]
-    if dl_targets:
-        bar = st.progress(0.0)
-        for i, v in enumerate(dl_targets):
-            ss.download_state[v.id] = ("⬇️ Downloading", "")
-            try:
-                path = source.download(
-                    v, lambda p, i=i, v=v: bar.progress(
-                        min((i + p) / len(dl_targets), 1.0), text=f"Downloading {v.name} ({p:.0%})"))
-                ss.download_state[v.id] = ("✅ Downloaded & verified", str(path))
-            except (AuthExpiredError, NotConnectedError) as exc:
-                ss.drive_error = exc
-                ss.download_state[v.id] = ("❌ Failed", str(exc))
-                break
-            except DriveError as exc:
-                ss.download_state[v.id] = ("❌ Failed", str(exc))
-        ok = sum("verified" in ss.download_state[v.id][0] for v in dl_targets
-                 if v.id in ss.download_state)
-        ss.flash = ("success" if ok == len(dl_targets) else "warning",
-                    f"Downloaded {ok}/{len(dl_targets)} video(s) to {settings.work_dir}.")
-        st.rerun()
-    for v in sel:
-        state, msg = ss.download_state.get(v.id, ("", ""))
-        if "Failed" in state:
-            st.error(f"{v.name}: {msg}")
-
-# ---------- matching ----------
-if ss.content and selected_videos():
-    report = match_videos([v.to_dict() for v in selected_videos()], list(ss.content),
-                          ss.match_overrides, ss.match_confirmed, ss.match_skipped)
-    actions = render_mapping_panel(report, sorted(k for k in ss.content if k != "(unassigned)")
-                                   + (["(unassigned)"] if "(unassigned)" in ss.content else []))
-    if actions:
-        for act in actions:
-            kind, vid = act[0], act[1]
-            if kind == "assign":
-                ss.match_overrides[vid] = act[2]
-            elif kind == "confirm":
-                ss.match_confirmed.add(confirm_token(vid, act[2]))
-            elif kind == "skip":
-                ss.match_skipped.add(vid)
-            elif kind == "unskip":
-                ss.match_skipped.discard(vid)
-            elif kind == "auto":
-                ss.match_overrides.pop(vid, None)
-                ss.match_confirmed = {t for t in ss.match_confirmed if not t.startswith(f"{vid}::")}
-        resync()
-        st.rerun()
-
-records = ss.records
-if not ss.batch_started or not any(j.status in ACTIVE for j in ss.batch_jobs):
-    apply_stored_status()
-st.divider()
-ui.render_summary_cards(records)
-
-if not records:
-    ui.render_empty_state()
-    render_history_panel(ss.history_store)
-    st.stop()
-
-# ---------- table ----------
-st.subheader("2. Videos & captions")
-ui.render_video_table(records)
-
-# ---------- content preview ----------
-st.subheader("3. Content preview & editing")
-names = [r.filename for r in records]
-sel_name = st.selectbox("Select a video", names, key="selected_video")
-rec = records[names.index(sel_name)]
-st.markdown(f"**Status:** {ui.badge(rec.overall_status)} · **Mapping:** {ui.match_badge(rec)}"
-            + (f" → `{rec.content_key}` ({rec.match_method})" if rec.content_key else ""))
-for e in rec.errors:
-    st.error(e)
-rec_issues = [i for i in (ss.parse_result.issues if ss.parse_result else [])
-              if rec.content_key and i.video and stem(i.video) == stem(rec.content_key)]
-if ui.render_content_editor(rec, rec_issues, ss.content.get(rec.content_key) if rec.content_key else None):
-    revalidate(rec)
-    st.rerun()
-
-c1, c2, c3 = st.columns(3)
-single = None
-if c1.button("Publish to Facebook", disabled=not rec.is_valid, use_container_width=True):
-    single = [Platform.FACEBOOK]
-if c2.button("Publish to Instagram", disabled=not rec.is_valid, use_container_width=True):
-    single = [Platform.INSTAGRAM]
-if c3.button("Publish to Both", disabled=not rec.is_valid, use_container_width=True):
-    single = list(PUBLISHABLE_PLATFORMS)
-if single:
-    jobs = PublishingCoordinator.plan(records, single, [rec.video_id])
-    if not jobs:
-        ss.flash = ("info", "Already published or in progress on the chosen platform(s).")
-    else:
-        prepare(jobs)
-        if not any(j.duplicate for j in jobs):
-            ss.batch_started = True
-            run_jobs(jobs)
-    st.rerun()
-
-# ---------- bulk publishing ----------
-st.subheader("4. Bulk publishing")
-st.caption(mode_text())
-if not any(r.is_valid for r in records):
-    st.error("Publishing is disabled: there are no valid records.")
-else:
-    excluded = [r.filename for r in records if not r.is_valid]
-    if excluded:
-        st.caption(f"Excluded until corrected or skipped: {len(excluded)} video(s).")
-    req = batch_panel.render_batch_setup(records)
-    if req:
-        jobs = PublishingCoordinator.plan(records, req["platforms"], req["video_ids"])
-        prepare(jobs)
-        if not jobs:
-            ss.flash = ("info", "Nothing to publish – everything selected is already published or "
-                                "in progress.")
-        st.rerun()
-
-r1, r2 = st.columns(2)
-retry_jobs = PublishingCoordinator.plan_retry(records, ss.retryable)
-non_retryable = sum(1 for r in records for p in r.selected_platforms
-                    if r.platform_status.get(p) == Status.FAILED
-                    and not ss.retryable.get((r.video_id, p.value), True))
-if r1.button(f"🔁 Retry Failed ({len(retry_jobs)})", disabled=not retry_jobs,
-             use_container_width=True,
-             help="Retries only failures verified as retryable and re-checks processing/uncertain "
-                  "posts. Platforms that already succeeded are never re-posted."):
-    prepare(retry_jobs)
-    st.rerun()
-if non_retryable:
-    r2.caption(f"{non_retryable} failure(s) need fixing first (e.g. permissions or unsupported "
-               "content) – they are not retried automatically.")
-
-jobs = ss.batch_jobs
-if jobs:
-    pending = [j for j in jobs if j.status in ACTIVE]
-    dups = [j for j in jobs if j.duplicate and j.status == "cancelled"]
-    st.markdown(f"**Current batch – {len(jobs)} job(s)**")
-    if dups and not ss.batch_started:
-        st.warning(f"⚠️ {len(dups)} duplicate(s) held back: these video/platform combinations were "
-                   "already published successfully. Publishing again creates a second post.")
-        if st.button(f"Publish duplicates anyway ({len(dups)})"):
-            PublishingCoordinator.allow_duplicates(jobs)
-            st.rerun()
-    if not ss.batch_started and pending:
-        to_cancel = batch_panel.render_queue(jobs, editable=True)
-        b1, b2, b3 = st.columns(3)
-        if b1.button(f"🚫 Cancel ticked ({len(to_cancel)})", disabled=not to_cancel,
-                     use_container_width=True):
-            PublishingCoordinator.cancel(jobs, to_cancel)
-            st.rerun()
-        if b2.button("Discard batch", use_container_width=True):
-            PublishingCoordinator.cancel(jobs, {j.id for j in pending})
-            ss.batch_jobs = []
-            st.rerun()
-        if b3.button(f"✅ Start publishing ({len(pending)})", type="primary",
-                     use_container_width=True, disabled=ss.history_store is None):
-            ss.confirm_batch = True
-        if ss.get("confirm_batch"):
-            st.warning(f"⚠️ Publish **{len(pending)}** job(s)? ({mode_text()})")
-            y, n = st.columns(2)
-            if y.button("Yes, publish now", type="primary", use_container_width=True,
-                        key="batch_confirm"):
-                ss.confirm_batch = False
-                ss.batch_started = True
-                run_jobs(jobs)
-                st.rerun()
-            if n.button("Back", use_container_width=True, key="batch_back"):
-                ss.confirm_batch = False
-                st.rerun()
-    else:
-        batch_panel.render_queue(jobs, editable=False)
-    batch_panel.render_summary(summarize(jobs))
-
-# ---------- scheduled posts (date + 1 day) ----------
-st.subheader("5. Schedule posts (proposed date = original + 1 day)")
-st.caption("Nothing is submitted until you approve each post. Approved Facebook posts are "
-           "scheduled (or saved as drafts) – never published immediately. Instagram's API "
-           "cannot schedule Reels, so Instagram posts are prepared for manual scheduling.")
-ss.setdefault("schedules", {})
+with st.sidebar:
+    st.subheader("Original date/time")
+    tz_name = settings.default_timezone
+    default_date = st.date_input("Default original date", value=None,
+                                 help="Used for every video without its own date. Leave empty "
+                                      "to use each Drive file's modified time.")
+    default_time = st.time_input("Default original time", value=time(18, 30), step=60)
 
 
 def original_for(rec) -> datetime | None:
-    """Original date/time from the source data: Drive 'modified' time (local timezone)."""
+    if rec.video_id in ss.originals:
+        return ss.originals[rec.video_id]
+    if default_date:
+        return datetime.combine(default_date, default_time)
     video = next((v for v in (ss.drive_listing.videos if ss.drive_listing else [])
                   if v.id == rec.video_id), None)
     raw = getattr(video, "modified_time", "") if video else ""
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone() if raw else None
-    except ValueError:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00")) if raw else None
+        return scheduling.to_local(dt, tz_name).replace(tzinfo=None) if dt else None
+    except (ValueError, scheduling.ScheduleParseError):
         return None
 
 
-valid = [r for r in records if r.is_valid]
-if not valid:
-    st.info("No valid videos to schedule.")
-else:
-    with st.expander("Set or correct an original date/time"):
-        o1, o2, o3, o4 = st.columns([2, 1, 1, 1])
-        o_name = o1.selectbox("Video", [r.filename for r in valid], key="sch_orig_video")
-        o_date = o2.text_input("Original date", placeholder="9 September", key="sch_orig_date")
-        o_time = o3.text_input("Original time", placeholder="10:30 AM", key="sch_orig_time")
-        if o4.button("Apply", use_container_width=True):
+def resync() -> None:
+    videos = ss.drive_listing.videos if ss.drive_listing else []
+    ss.records = sync_records(ss.records, videos, ss.content, ss.match_overrides,
+                              ss.match_confirmed, ss.match_skipped)
+
+
+# ---------- header ----------
+st.title(f"{settings.app_icon} {settings.app_name}")
+st.caption("Get Instagram & Facebook text and a proposed schedule date for each Drive video. "
+           "This app never publishes or schedules posts – you do that in the native apps.")
+if ss.flash:
+    getattr(st, ss.flash[0])(ss.flash[1])
+    ss.flash = None
+if isinstance(ss.drive_error, (AuthExpiredError, NotConnectedError)) and not g["mock"]:
+    st.error(f"🔑 {ss.drive_error} Use **Connect Google account** in the sidebar.")
+
+# ---------- inputs ----------
+with st.form("source_form"):
+    c1, c2 = st.columns(2)
+    drive_url = c1.text_input("Google Drive folder URL *", key="drive_url",
+                              placeholder="https://drive.google.com/drive/folders/...")
+    gemini_url = c2.text_input("Gemini shared conversation URL", key="gemini_url",
+                               placeholder="https://share.gemini.google/… or "
+                                           "https://gemini.google.com/share/…")
+    gemini_text = st.text_area("Or paste the Gemini response (used instead of the URL)",
+                               key="gemini_text", height=160)
+    upload = st.file_uploader("Or upload the Gemini response as a text file",
+                              type=["txt", "md", "json"])
+    submitted = st.form_submit_button("Get videos & captions", type="primary")
+
+if submitted:
+    errors = validate_sources(drive_url, gemini_url, bool(gemini_text.strip()), upload is not None)
+    for e in errors:
+        st.error(e)
+    if not errors:
+        result = label = None
+        try:
+            if upload is not None:
+                result, label = parse_uploaded_result(upload.name, upload.getvalue()), upload.name
+            elif gemini_text.strip():
+                result, label = parse_gemini_response(gemini_text), "pasted text"
+            else:
+                with st.spinner("Reading the Gemini conversation…"):
+                    result = parse_gemini_response(fetch_shared_conversation(gemini_url))
+                label = "Gemini shared URL"
+        except GeminiRetrievalError as exc:
+            st.warning(f"**Could not retrieve the Gemini conversation automatically.** {exc} "
+                       "Paste the response text into the box above instead.")
+        except Exception as exc:  # malformed file etc.
+            st.error(f"Could not read the Gemini content: {redact(exc)}")
+        if result is not None and not result.has_content:
+            st.error("No numbered responses with Instagram/Facebook sections were found.")
+        elif result is not None:
+            ss.content, ss.parse_result, ss.content_source = result.content, result, label
+            ss.match_overrides, ss.match_confirmed, ss.match_skipped = {}, set(), set()
+            ss.records = []
             try:
-                orig = scheduling.parse_original(o_date, o_time).astimezone()
-                r = next(r for r in valid if r.filename == o_name)
-                for p in r.selected_platforms:
-                    old = ss.schedules.get((r.video_id, p.value))
-                    if old and old.submitted:
-                        continue
-                    ss.schedules[(r.video_id, p.value)] = scheduling.build_proposal(
-                        r.video_id, r.filename, p, r.content[p].publish_text(), orig)
+                with st.spinner("Reading the Google Drive folder…"):
+                    ss.drive_listing = source.list_videos(drive_url)
+                ss.drive_error = None
+                resync()
+                if not ss.drive_listing.videos:
+                    st.warning("The folder has no supported video files (MP4/MOV).")
+            except DriveError as exc:
+                ss.drive_error, ss.drive_listing = exc, None
+                st.error(f"Google Drive: {exc}")
+
+if ss.parse_result:
+    ui.render_parse_issues(ss.parse_result.issues, ss.content_source)
+if ss.drive_listing and ss.drive_listing.skipped:
+    with st.expander(f"{len(ss.drive_listing.skipped)} unsupported file(s) ignored"):
+        for s in ss.drive_listing.skipped:
+            st.caption(f"{s.name} – {s.reason}")
+
+# ---------- matching ----------
+if ss.content and ss.drive_listing and ss.drive_listing.videos:
+    report = match_videos([v.to_dict() for v in ss.drive_listing.videos], list(ss.content),
+                          ss.match_overrides, ss.match_confirmed, ss.match_skipped)
+    actions = render_mapping_panel(report, sorted(k for k in ss.content if k != "(unassigned)"))
+    for act in actions:
+        kind, vid = act[0], act[1]
+        if kind == "assign":
+            ss.match_overrides[vid] = act[2]
+        elif kind == "confirm":
+            ss.match_confirmed.add(confirm_token(vid, act[2]))
+        elif kind == "skip":
+            ss.match_skipped.add(vid)
+        elif kind == "unskip":
+            ss.match_skipped.discard(vid)
+        elif kind == "auto":
+            ss.match_overrides.pop(vid, None)
+            ss.match_confirmed = {t for t in ss.match_confirmed if not t.startswith(f"{vid}::")}
+    if actions:
+        resync()
+        st.rerun()
+
+# ---------- results ----------
+records = [r for r in ss.records if not r.skipped]
+if not records:
+    st.info("Paste a Drive folder URL and the Gemini response, then click "
+            "**Get videos & captions**. Use **Load sample data** to try it.")
+    st.stop()
+
+results = [build_result(r, original_for(r), sample=g["mock"]) for r in records]
+st.subheader("Results")
+st.caption(f"Times are wall-clock times ({tz_name}). The proposed date is a suggestion only – "
+           "nothing has been scheduled.")
+st.dataframe([summary_row(r) for r in results], hide_index=True, use_container_width=True)
+
+for r in results:
+    with st.expander(f"{r.filename}  ·  File #{r.file_number if r.file_number is not None else '—'}"
+                     f" → Gemini #{r.response_number if r.response_number is not None else '—'}"
+                     + ("  ⚠️" if r.warnings else ""), expanded=bool(r.warnings)):
+        for w in r.warnings:
+            st.warning(w)
+        if r.link:
+            l1, l2 = st.columns([1, 3])
+            l1.link_button("▶️ Open video in Drive", r.link)
+            if l2.toggle("Show preview", key=f"pv_{r.video_id}"):
+                components.iframe(drive_preview_link(r.video_id), height=360)
+        else:
+            st.caption("Sample video – no Drive file.")
+
+        d1, d2, d3 = st.columns([1, 1, 2])
+        o = r.original or datetime.combine(date.today(), default_time)
+        new_d = d1.date_input("Original date", o.date(), key=f"od_{r.video_id}")
+        new_t = d2.time_input("Original time", o.time(), step=60, key=f"ot_{r.video_id}")
+        new_orig = datetime.combine(new_d, new_t)
+        if r.original is None or new_orig != r.original:
+            if d1.button("Apply", key=f"oa_{r.video_id}"):
+                ss.originals[r.video_id] = new_orig
                 st.rerun()
-            except scheduling.ScheduleParseError as exc:
-                st.error(str(exc))
+        d3.markdown(f"**Proposed Schedule Date/Time:** {scheduling.fmt(r.proposed)}  \n"
+                    "_Not scheduled – use this when scheduling manually._")
 
-    proposals = []
-    for r in valid:
-        for p in r.selected_platforms:
-            k = (r.video_id, p.value)
-            prop = ss.schedules.get(k)
-            if prop is None:
-                orig = original_for(r)
-                if orig is None:
-                    continue
-                prop = ss.schedules[k] = scheduling.build_proposal(
-                    r.video_id, r.filename, p, r.content[p].publish_text(), orig)
-            elif not prop.submitted and prop.caption != r.content[p].publish_text():
-                scheduling.edit_proposal(prop, caption=r.content[p].publish_text())  # re-approve
-            proposals.append(prop)
-    missing = [r.filename for r in valid if not any(p.video_id == r.video_id for p in proposals)]
-    if missing:
-        st.warning("No original date/time found for: " + ", ".join(missing)
-                   + ". Set it above to prepare these posts.")
-
-    if proposals:
-        st.markdown("**Review (read-only – importing or matching never schedules anything)**")
-        render_review_table([scheduling.review_row(
-            r, {p.value: ss.schedules.get((r.video_id, p.value))
-                for p in PUBLISHABLE_PLATFORMS}) for r in records])
-        render_schedule_table(proposals)
-        names = sorted({p.filename for p in proposals})
-        sch_name = st.selectbox("Review a video", names, key="sch_review")
-        by_id = {r.video_id: r for r in records}
-        for prop in [p for p in proposals if p.filename == sch_name]:
-            note = (scheduling.INSTAGRAM_UNSUPPORTED if prop.platform == Platform.INSTAGRAM
-                    else "" if fb["page"] else "Facebook Page not connected – connect it in the "
-                                                "sidebar to schedule. Nothing will be submitted.")
-            content = by_id[prop.video_id].get_content(prop.platform)
-            act = render_proposal_editor(prop, note, content.caption or content.description,
-                                         content.hashtags)
-            if not act:
-                continue
-            a = act["action"]
-            if a == "skip":
-                scheduling.skip(prop, ss.audit)
-            elif a == "unskip":
-                scheduling.unskip(prop, ss.audit)
-            elif a == "retry":
-                scheduling.retry(prop, ss.audit)
+        ci, cf = st.columns(2)
+        with ci:
+            st.markdown("**Instagram Reels – caption & hashtags**")
+            if r.instagram_text:
+                st.code(r.instagram_text, language=None, wrap_lines=True)  # copy button
             else:
-                if content.caption or not content.description:
-                    content.caption = act["body"]
-                else:
-                    content.description = act["body"]
-                content.hashtags = act["hashtags"]
-                revalidate(by_id[prop.video_id])
-                scheduling.edit_proposal(prop, new_proposed=act["proposed"], mode=act["mode"],
-                                         caption=content.publish_text())
-                ss.audit.record(prop, "edited")
-                if a == "approve":
-                    scheduling.approve(prop, ss.audit)
-            st.rerun()
-
-        approved = [p for p in proposals if p.status == scheduling.APPROVED]
-        if st.button(f"📤 Submit approved schedules ({len(approved)})", type="primary",
-                     disabled=not approved):
-            ss.confirm_schedule = True
-        if ss.get("confirm_schedule") and approved:
-            st.warning("Submit these approved posts? Scheduled Facebook posts will be published "
-                       "automatically by Facebook at the scheduled time.\n\n" + "\n".join(
-                           f"- {p.platform.value}: {p.filename} → {scheduling.fmt(p.proposed)} "
-                           f"({p.mode})" for p in approved))
-            y, n = st.columns(2)
-            if y.button("Confirm submit", type="primary", use_container_width=True,
-                        key="sch_confirm"):
-                ss.confirm_schedule = False
-                schedulers = {Platform.INSTAGRAM: scheduling.instagram_scheduler()}
-                if fb["page"]:
-                    try:
-                        page = ss.meta_auth.page_for_publishing()
-                        schedulers[Platform.FACEBOOK] = scheduling.FacebookReelsScheduler(
-                            ss.graph, page.id, page.access_token, ss.job_store)
-                    except MetaError as exc:
-                        schedulers[Platform.FACEBOOK] = scheduling.UnsupportedScheduler(
-                            f"Facebook: {redact(exc)} Nothing was submitted.")
-                else:
-                    schedulers[Platform.FACEBOOK] = scheduling.UnsupportedScheduler(
-                        "Facebook Page not connected – nothing was submitted.")
-                by_id = {r.video_id: r for r in records}
-                scheduling.submit_approved(approved, schedulers,
-                                           lambda p: resolve_video_path(by_id[p.video_id])[0],
-                                           audit=ss.audit)
-                st.rerun()
-            if n.button("Back", use_container_width=True, key="sch_back"):
-                ss.confirm_schedule = False
-                st.rerun()
-
-        with st.expander("Approval & action log"):
-            log = ss.audit.entries()
-            if log:
-                st.dataframe([{k: e.get(k) for k in ("at", "event", "platform", "filename",
-                                                     "proposed", "mode", "status", "message")}
-                              for e in reversed(log)], hide_index=True,
-                             use_container_width=True)
+                st.warning("Instagram caption not found.")
+        with cf:
+            st.markdown("**Facebook Reels – description & hashtags**")
+            if r.facebook_text:
+                st.code(r.facebook_text, language=None, wrap_lines=True)  # copy button
             else:
-                st.caption("No approvals or actions recorded yet.")
+                st.warning("Facebook description not found.")
 
-# ---------- progress & history ----------
-st.subheader("6. Progress & history")
-ui.render_progress(records)
-ui.render_history(ss.history)
-render_history_panel(ss.history_store)
+        m1, m2 = st.columns(2)
+        for col, platform in ((m1, "Instagram"), (m2, "Facebook")):
+            key = (r.video_id, platform)
+            ss.user_confirmed[key] = col.checkbox(
+                f"I scheduled this on {platform} myself", value=ss.user_confirmed.get(key, False),
+                key=f"uc_{r.video_id}_{platform}",
+                help="Your own note for this session only – the app does not check or post.")
 

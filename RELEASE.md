@@ -1,3 +1,5 @@
+> **Superseded (ReelFlow Studio):** automatic publishing was removed. Sections below about publishing, Meta apps or tokens are historical. See README.md.
+
 # Release notes, permissions, limitations & test report
 
 ## Deliverables

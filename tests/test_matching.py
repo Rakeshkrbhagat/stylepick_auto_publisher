@@ -6,7 +6,6 @@ from src.content_parser import parse_gemini_text
 from src.matching import build_records, confirm_token, match_videos, trailing_number
 from src.mock_data import SAMPLE_GEMINI_TEXT, mock_list_videos
 from src.models import MatchStatus, Platform, PlatformContent, Status
-from src.publishing_service import build_jobs
 
 
 def _content(*keys):
@@ -24,9 +23,9 @@ def test_sample_matching_deterministic():
     r2 = match_videos(list(reversed(videos)), list(reversed(list(content))))
     assert {m.video_id: m.content_key for m in r1.matches} == {m.video_id: m.content_key for m in r2.matches}
     by = r1.by_video()
-    assert by["vid01"].content_key == "stylepick_01.mp4" and by["vid01"].method == "Filename"
+    assert by["vid01"].content_key == "reel_01.mp4" and by["vid01"].method == "Filename"
     assert by["vid10"].status == MatchStatus.UNMATCHED
-    assert r1.unused_content == ["stylepick_10.mp4"]
+    assert r1.unused_content == ["reel_10.mp4"]
 
 
 def test_extension_and_case_and_file_id():
@@ -37,13 +36,13 @@ def test_extension_and_case_and_file_id():
 
 
 def test_similar_and_numbered_need_confirmation():
-    r = match_videos([_v("a", "StylePick 01.mp4"), _v("b", "reel_7.mp4")],
-                     ["stylepick_01.mp4", "Video 7"]).by_video()
-    assert r["a"].status == MatchStatus.NEEDS_CONFIRMATION and r["a"].content_key == "stylepick_01.mp4"
+    r = match_videos([_v("a", "Reel 01.mp4"), _v("b", "reel_7.mp4")],
+                     ["reel_01.mp4", "Video 7"]).by_video()
+    assert r["a"].status == MatchStatus.NEEDS_CONFIRMATION and r["a"].content_key == "reel_01.mp4"
     assert r["b"].status == MatchStatus.MATCHED and r["b"].content_key == "Video 7"
     assert r["b"].method.startswith("Trailing number 7")
-    r = match_videos([_v("a", "StylePick 01.mp4")], ["stylepick_01.mp4"],
-                     confirmed={confirm_token("a", "stylepick_01.mp4")}).by_video()
+    r = match_videos([_v("a", "Reel 01.mp4")], ["reel_01.mp4"],
+                     confirmed={confirm_token("a", "reel_01.mp4")}).by_video()
     assert r["a"].status == MatchStatus.MATCHED
 
 
@@ -76,21 +75,21 @@ def test_manual_override_and_no_content():
     assert recs[1].match_status == MatchStatus.UNMATCHED and not recs[1].is_valid
 
 
-def test_missing_caption_invalid_and_excluded_from_jobs():
+def test_missing_caption_needs_review():
     content = _content("a.mp4")
     content["a.mp4"][Platform.FACEBOOK] = PlatformContent()
     recs = build_records([_v("a", "a.mp4")], content)
     assert "Missing Facebook caption." in recs[0].errors
-    assert build_jobs(recs) == []
+    assert not recs[0].is_valid and recs[0].overall_status == Status.NEEDS_REVIEW
 
 
 def test_text_preserved_and_source_not_mutated():
     content = parse_gemini_text(SAMPLE_GEMINI_TEXT)
-    original = content["stylepick_01.mp4"][Platform.INSTAGRAM].caption
+    original = content["reel_01.mp4"][Platform.INSTAGRAM].caption
     recs = build_records(mock_list_videos(""), content)
     assert recs[0].content[Platform.INSTAGRAM].caption == original  # verbatim
     recs[0].content[Platform.INSTAGRAM].caption = "edited"
-    assert content["stylepick_01.mp4"][Platform.INSTAGRAM].caption == original
+    assert content["reel_01.mp4"][Platform.INSTAGRAM].caption == original
 
 
 def test_edits_kept_until_mapping_changes():
@@ -104,10 +103,9 @@ def test_edits_kept_until_mapping_changes():
     assert recs[0].content[Platform.INSTAGRAM].caption == "IG b.mp4 ✨"
 
 
-def test_valid_records_flow_to_publishing():
+def test_valid_records_ready_for_review_queue():
     recs = build_records(mock_list_videos(""), parse_gemini_text(SAMPLE_GEMINI_TEXT))
-    jobs = build_jobs(recs)
-    assert {r.content_key for r, _ in jobs} == {f"stylepick_{i:02d}.mp4" for i in (1, 2, 3, 4, 5, 6, 8, 9)}
+    assert {r.content_key for r in recs if r.is_valid} == {f"reel_{i:02d}.mp4" for i in (1, 2, 3, 4, 5, 6, 8, 9)}
 
 
 # ---------------- trailing-number matching (Gemini responses numbered 1..N)

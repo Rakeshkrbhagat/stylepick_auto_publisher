@@ -10,35 +10,30 @@ from enum import Enum
 class Platform(str, Enum):
     INSTAGRAM = "Instagram"
     FACEBOOK = "Facebook"
-    YOUTUBE = "YouTube"  # reference only, not publishable yet
+    YOUTUBE = "YouTube"  # parsed but ignored (never shown, never used)
 
 
-PUBLISHABLE_PLATFORMS = (Platform.INSTAGRAM, Platform.FACEBOOK)
+# Platforms the user prepares content for. Nothing is ever published by this application.
+TARGET_PLATFORMS = (Platform.INSTAGRAM, Platform.FACEBOOK)
 
 
 class Status(str, Enum):
-    PENDING = "Pending"
-    VALIDATING = "Validating"
+    """Workflow statuses. None of them means 'published' – the app never publishes."""
+
     READY = "Ready"
-    UPLOADING = "Uploading"
-    PROCESSING = "Processing"
-    PUBLISHED = "Published"
-    FAILED = "Failed"
-    RETRY_PENDING = "Retry Pending"
-    INVALID = "Invalid"
+    NEEDS_REVIEW = "Needs Review"
+    READY_TO_SCHEDULE = "Ready to Schedule"
+    SCHEDULED_BY_USER = "Scheduled by User"
+    NEEDS_ATTENTION = "Needs Attention"
     SKIPPED = "Skipped"
 
 
 STATUS_ICONS = {
-    Status.PENDING: "⏳",
-    Status.VALIDATING: "🔍",
     Status.READY: "✅",
-    Status.UPLOADING: "⬆️",
-    Status.PROCESSING: "⚙️",
-    Status.PUBLISHED: "🎉",
-    Status.FAILED: "❌",
-    Status.RETRY_PENDING: "🔁",
-    Status.INVALID: "⚠️",
+    Status.NEEDS_REVIEW: "📝",
+    Status.READY_TO_SCHEDULE: "🗓️",
+    Status.SCHEDULED_BY_USER: "☑️",
+    Status.NEEDS_ATTENTION: "⚠️",
     Status.SKIPPED: "⏭️",
 }
 
@@ -69,9 +64,11 @@ class PlatformContent:
         return not any(getattr(self, f) for f in self.__dataclass_fields__)
 
     def publish_text(self) -> str:
-        """Main body text used when publishing (caption/description + hashtags)."""
+        """Body text the user copies (caption/description + hashtags)."""
         body = self.caption or self.description
         return "\n\n".join(p for p in [body.strip(), self.hashtags.strip()] if p)
+
+    copy_text = publish_text
 
 
 @dataclass
@@ -80,12 +77,8 @@ class VideoRecord:
     filename: str
     thumbnail_url: str = ""
     content: dict[Platform, PlatformContent] = field(default_factory=dict)
-    selected_platforms: list[Platform] = field(
-        default_factory=lambda: list(PUBLISHABLE_PLATFORMS)
-    )
-    platform_status: dict[Platform, Status] = field(default_factory=dict)
+    selected_platforms: list[Platform] = field(default_factory=lambda: list(TARGET_PLATFORMS))
     errors: list[str] = field(default_factory=list)
-    simulate_failure: bool = False  # mock-only hook
     # ---- matching ----
     content_key: str | None = None          # key in parsed Gemini content
     match_status: MatchStatus = MatchStatus.UNMATCHED
@@ -109,22 +102,7 @@ class VideoRecord:
     def overall_status(self) -> Status:
         if self.skipped:
             return Status.SKIPPED
-        if self.errors:
-            return Status.INVALID
-        statuses = [
-            self.platform_status.get(p, Status.READY) for p in self.selected_platforms
-        ]
-        if not statuses:
-            return Status.PENDING
-        for s in (Status.UPLOADING, Status.PROCESSING, Status.VALIDATING,
-                  Status.FAILED, Status.RETRY_PENDING):
-            if s in statuses:
-                return s
-        if all(s == Status.PUBLISHED for s in statuses):
-            return Status.PUBLISHED
-        if Status.PUBLISHED in statuses:
-            return Status.READY
-        return statuses[0]
+        return Status.NEEDS_REVIEW if self.errors else Status.READY
 
 
 @dataclass
