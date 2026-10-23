@@ -92,6 +92,9 @@ with st.sidebar:
                   "user_confirmed"):
             ss.pop(k, None)
         st.rerun()
+    import os as _os
+    st.caption(f"Build: {(_os.getenv('RENDER_GIT_COMMIT') or 'local')[:7]} · Gemini reader v2 "
+               "(browser rendering)")
 
 auth_url = None
 if settings.google_redirect_uri and not ss.use_mock_drive and ss.auth.client_configured() \

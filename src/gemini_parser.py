@@ -184,10 +184,32 @@ def render_with_browser(url: str, timeout: float = 45) -> str:
         raise BrowserRenderError(f"the page did not load within {int(timeout)} s") from None
     except PwError as exc:
         msg = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        if ("Executable doesn't exist" in msg or "playwright install" in msg) and \
+                _install_browser_once():
+            return render_with_browser(url, timeout)
         if "Executable doesn't exist" in msg or "playwright install" in msg:
             raise BrowserRenderError("the headless browser is not installed on this server "
                                      "(run 'playwright install chromium' in the build)") from None
         raise BrowserRenderError(f"the headless browser failed ({msg[:120]})") from None
+
+
+_INSTALL_TRIED = False
+
+
+def _install_browser_once() -> bool:
+    """Download Chromium for Playwright the first time it is needed (once per process)."""
+    global _INSTALL_TRIED
+    if _INSTALL_TRIED:
+        return False
+    _INSTALL_TRIED = True
+    import subprocess
+    import sys
+    try:
+        done = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                              capture_output=True, timeout=300)
+        return done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 _HEADERS = {
