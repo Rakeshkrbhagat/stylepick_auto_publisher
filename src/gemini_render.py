@@ -66,11 +66,20 @@ def render(url: str, seconds: float) -> dict:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
                 headless=True, timeout=ms,
-                args=["--no-sandbox", "--disable-dev-shm-usage",
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                      "--no-zygote", "--renderer-process-limit=1",
+                      "--disable-extensions", "--disable-background-networking",
+                      "--disable-features=site-per-process,Translate,MediaRouter",
+                      "--js-flags=--max-old-space-size=192",
                       "--disable-blink-features=AutomationControlled"])
             try:
-                page = browser.new_context(locale="en-US", user_agent=UA,
-                                           viewport={"width": 1280, "height": 2000}).new_page()
+                ctx = browser.new_context(locale="en-US", user_agent=UA,
+                                          viewport={"width": 1024, "height": 768})
+                # Text only: skip images, media and fonts to keep memory low.
+                ctx.route("**/*", lambda r: r.abort()
+                          if r.request.resource_type in ("image", "media", "font")
+                          else r.continue_())
+                page = ctx.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=ms)
                 _answer_consent(page, ms)
                 if "accounts.google.com" in page.url:

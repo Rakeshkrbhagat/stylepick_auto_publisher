@@ -162,25 +162,65 @@ def render_with_browser(url: str, timeout: float = RENDER_TIME_LIMIT) -> str:
         raise BrowserRenderError(_install_status_message())
     root = Path(__file__).resolve().parents[1]
     per_step = max(5.0, (timeout - 8) / 2)
+    import os
+    import signal
+
+    def _isolate():  # runs in the child before exec (POSIX only)
+        os.setsid()  # own process group so Chromium can be killed as a whole
+        try:  # if memory runs out, the kernel kills the browser, not the web app
+            with open("/proc/self/oom_score_adj", "w") as fh:
+                fh.write("1000")
+        except OSError:
+            pass
+
+    posix = os.name == "posix"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "src.gemini_render", url, str(per_step)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(root),
+        preexec_fn=_isolate if posix else None)
     try:
-        done = subprocess.run(
-            [sys.executable, "-m", "src.gemini_render", url, str(per_step)],
-            capture_output=True, timeout=timeout, cwd=str(root))
+        stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        _kill_tree(proc, posix, signal)
         raise BrowserRenderError(f"rendering took longer than {int(timeout)} s and was "
                                  "stopped") from None
     except OSError as exc:
+        _kill_tree(proc, posix, signal)
         raise BrowserRenderError(f"could not start the renderer ({type(exc).__name__})") from None
+    finally:
+        if proc.poll() is None:
+            _kill_tree(proc, posix, signal)
     try:
-        out = json.loads(done.stdout.decode("utf-8") or "{}")
+        out = json.loads(stdout.decode("utf-8") or "{}")
     except ValueError:
         out = {}
+    if not out and proc.returncode and proc.returncode < 0:
+        raise BrowserRenderError(
+            "the headless browser was stopped by the server (likely out of memory, signal "
+            f"{-proc.returncode}). Use the paste-text or .txt upload option, or a larger "
+            "Render instance")
     if out.get("ok"):
         return out.get("text", "")
     if out.get("kind") == "no_browser":
         start_browser_install()
         raise BrowserRenderError(_install_status_message())
     raise BrowserRenderError(out.get("error") or "the headless browser exited unexpectedly")
+
+
+def _kill_tree(proc, posix: bool, signal) -> None:
+    """Kill the renderer and every Chromium child it started."""
+    import os
+    try:
+        if posix:
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- one-time browser install
