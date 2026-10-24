@@ -98,8 +98,14 @@ def render(url: str, seconds: float) -> dict:
                 if answers:
                     text = "\n\n".join(f"=== Video {i} ===\n{a.strip()}"
                                        for i, a in enumerate(answers, start=1))
-                    return {"ok": True, "text": text, "turns": len(answers)}
-                return {"ok": True, "text": page.evaluate(DEEP_TEXT_JS)}
+                else:
+                    text = page.evaluate(DEEP_TEXT_JS)
+                if not re.search(r"instagram", text, re.I) or \
+                        not re.search(r"facebook", text, re.I):
+                    return {"ok": False, "kind": "empty",
+                            "error": "Gemini content did not render: no Instagram Reels / "
+                                     f"Facebook Reels text found (starts: '{_snippet(text)}')"}
+                return {"ok": True, "text": text, "turns": len(answers)}
             finally:
                 browser.close()
     except PwTimeout:
