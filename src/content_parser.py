@@ -110,6 +110,12 @@ def _is_caps_heading(label: str) -> bool:
     return (len(letters) >= 3 and all(c.isupper() for c in letters)
             and 2 <= len(label.split()) <= 5)
 _HEADING_RE = re.compile(r"^\s*#{1,6}\s+\S")  # markdown heading (a '#hashtag' has no space)
+# Conversation-turn markers in exported/printed chats: they end the current section so a
+# user prompt is never appended to the previous response's hashtags.
+_TURN_RE = re.compile(
+    r"^\s*(?:you said|gemini said|gemini|show thinking|prompt|user|response|model|"
+    r"edit|copy|share|regenerate)\s*[:：]?\s*$", re.I,
+)
 # Unrecognised labels with this wording are other fields (SEO keywords, triggers, ...):
 # they end the current field so their text is never appended to a caption.
 _OTHER_LABEL_RE = re.compile(
@@ -276,13 +282,17 @@ def parse_gemini_response(text: str) -> ParseResult:
             current = None  # e.g. 'SEO Keywords:', 'Share Trigger:' – never part of a caption
             continue
         if fname:
-            current = [m.group("value")]
+            current, cur_name = [m.group("value")], fname
             raw[video][platform].setdefault(fname, []).append(current)
             continue
         if current is not None:
             if (_RULE_RE.match(line) or _HEADING_RE.match(line)
                     or (not m and _NUMBERED_HEADING_RE.match(line))):  # rule / heading ends a field
                 current = None
+                continue
+            if (cur_name == "hashtags" and line.strip() and not line.lstrip().startswith("#")
+                    and any(x.strip() for x in current)):
+                current = None  # hashtag list ended; following text is not a hashtag
                 continue
             current.append(line)
         elif line.strip() and video is not None and platform is None:
