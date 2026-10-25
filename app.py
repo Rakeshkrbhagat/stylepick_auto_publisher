@@ -187,10 +187,12 @@ if submitted:
         st.error(e)
     if not errors:
         result = label = None
+        extracted = ""
         try:
             if pdf is not None:
                 with st.spinner("Reading the PDF…"):
-                    result = parse_gemini_response(extract_pdf_text(pdf.getvalue()))
+                    extracted = extract_pdf_text(pdf.getvalue())
+                    result = parse_gemini_response(extracted)
                 label = pdf.name
             else:
                 result, label = parse_gemini_response(gemini_text), "pasted text"
@@ -199,8 +201,14 @@ if submitted:
         except Exception as exc:
             st.error(f"Could not read the Gemini content: {redact(exc)}")
         if result is not None and not result.has_content:
-            st.error("No YouTube Shorts / Instagram Reels / Facebook Reels sections were found "
-                     "in the Gemini content. Check that the PDF contains Gemini's responses.")
+            st.error("Text was read from the Gemini content, but no YouTube Shorts / Instagram "
+                     "Reels / Facebook Reels headings were recognised in it.")
+            if extracted:
+                with st.expander(f"Show the text extracted from the PDF "
+                                 f"({len(extracted):,} characters)"):
+                    st.caption("If the headings are missing or garbled here, export the PDF "
+                               "again (e.g. via Google Docs) or paste the text instead.")
+                    st.code(extracted[:4000], language=None, wrap_lines=True)
         elif result is not None:
             ss.content, ss.parse_result, ss.content_source = result.content, result, label
             ss.match_overrides, ss.match_confirmed, ss.match_skipped = {}, set(), set()

@@ -215,6 +215,7 @@ def parse_gemini_response(text: str) -> ParseResult:
     video: str | None = None
     platform: Platform | None = None
     current: list[str] | None = None
+    cur_name = ""
     orphan_lines = 0
     implicit_used = False
     implicit_keys: list[str] = []
@@ -234,6 +235,9 @@ def parse_gemini_response(text: str) -> ParseResult:
         vkey = detect_video(line)
         if vkey:
             start_video(vkey)
+            continue
+        if _TURN_RE.match(line):
+            platform, current = None, None
             continue
         p = detect_platform(line)
         if p:
