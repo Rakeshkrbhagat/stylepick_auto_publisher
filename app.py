@@ -183,39 +183,36 @@ if isinstance(ss.drive_error, (AuthExpiredError, NotConnectedError)) and not g["
 
 # ---------- inputs ----------
 with st.form("source_form"):
-    c1, c2 = st.columns(2)
-    drive_url = c1.text_input("Google Drive folder URL *", key="drive_url",
+    drive_url = st.text_input("Google Drive folder URL *", key="drive_url",
                               placeholder="https://drive.google.com/drive/folders/...")
-    gemini_url = c2.text_input("Gemini shared conversation URL", key="gemini_url",
-                               placeholder="https://share.gemini.google/… or "
-                                           "https://gemini.google.com/share/…")
-    gemini_text = st.text_area("Or paste the Gemini response (used instead of the URL)",
-                               key="gemini_text", height=160)
-    upload = st.file_uploader("Or upload the Gemini response as a text file",
-                              type=["txt", "md", "json"])
+    pdf = st.file_uploader("Gemini Conversation PDF *", type=["pdf"],
+                           help="The Gemini conversation saved/exported as a PDF with "
+                                "selectable text. Processed in memory only – never stored.")
+    with st.expander("No PDF? Paste the Gemini response text instead"):
+        gemini_text = st.text_area("Gemini response text (used only when no PDF is uploaded)",
+                                   key="gemini_text", height=160)
     submitted = st.form_submit_button("Get videos & captions", type="primary")
 
 if submitted:
-    errors = validate_sources(drive_url, gemini_url, bool(gemini_text.strip()), upload is not None)
+    errors = validate_sources(drive_url, pdf is not None, bool(gemini_text.strip()))
     for e in errors:
         st.error(e)
     if not errors:
         result = label = None
         try:
-            if upload is not None:
-                result, label = parse_uploaded_result(upload.name, upload.getvalue()), upload.name
-            elif gemini_text.strip():
-                result, label = parse_gemini_response(gemini_text), "pasted text"
+            if pdf is not None:
+                with st.spinner("Reading the PDF…"):
+                    result = parse_gemini_response(extract_pdf_text(pdf.getvalue()))
+                label = pdf.name
             else:
-                with st.spinner("Reading the Gemini conversation (up to about a minute)…"):
-                    result = parse_gemini_response(fetch_shared_conversation(gemini_url))
-                label = "Gemini shared URL"
-        except GeminiRetrievalError as exc:
-            st.warning(f"**Could not retrieve the Gemini conversation automatically.** {exc}")
-        except Exception as exc:  # malformed file etc.
+                result, label = parse_gemini_response(gemini_text), "pasted text"
+        except PdfExtractionError as exc:
+            st.error(f"**Could not read the PDF.** {exc}")
+        except Exception as exc:
             st.error(f"Could not read the Gemini content: {redact(exc)}")
         if result is not None and not result.has_content:
-            st.error("No numbered responses with Instagram/Facebook sections were found.")
+            st.error("No YouTube Shorts / Instagram Reels / Facebook Reels sections were found "
+                     "in the Gemini content. Check that the PDF contains Gemini's responses.")
         elif result is not None:
             ss.content, ss.parse_result, ss.content_source = result.content, result, label
             ss.match_overrides, ss.match_confirmed, ss.match_skipped = {}, set(), set()
@@ -263,7 +260,7 @@ if ss.content and ss.drive_listing and ss.drive_listing.videos:
 # ---------- results ----------
 records = [r for r in ss.records if not r.skipped]
 if not records:
-    st.info("Paste a Drive folder URL and the Gemini response, then click "
+    st.info("Paste a Drive folder URL and upload the Gemini Conversation PDF, then click "
             "**Get videos & captions**. Use **Load sample data** to try it.")
     st.stop()
 

@@ -20,31 +20,10 @@ def validate_drive_url(url: str) -> str | None:
     return None
 
 
-def validate_gemini_url(url: str) -> str | None:
-    """Gemini URL is optional when response text or a file is provided.
-
-    Accepts https://gemini.google.com/share/<id> and https://share.gemini.google/<id>."""
-    from src.gemini_parser import GeminiRetrievalError, validate_share_url
-
-    if not url.strip():
-        return None
-    try:
-        validate_share_url(url)
-    except GeminiRetrievalError as exc:
-        return f"Invalid Gemini conversation URL. {exc.reason}"
-    return None
-
-
-def validate_sources(drive_url: str, gemini_url: str, has_text: bool, has_file: bool) -> list[str]:
+def validate_sources(drive_url: str, has_pdf: bool, has_text: bool = False) -> list[str]:
     errors = [e for e in [validate_drive_url(drive_url)] if e]
-    if has_text or has_file:
-        return errors  # pasted text / file takes priority; URL is not used
-    if not gemini_url.strip():
-        errors.append(
-            "Provide a Gemini conversation URL, paste the Gemini response, or upload a caption file."
-        )
-    elif err := validate_gemini_url(gemini_url):
-        errors.append(err)
+    if not (has_pdf or has_text):
+        errors.append("Upload the Gemini Conversation PDF (or paste the Gemini response text).")
     return errors
 
 

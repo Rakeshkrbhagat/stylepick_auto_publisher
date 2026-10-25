@@ -3,10 +3,5 @@ services:
     name: stylepick-auto-publisher
     runtime: python
     buildCommand: bash build.sh
-    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
-    envVars:
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
-      - key: GEMINI_BROWSER_RENDERING
-        value: "on"
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true --server.maxUploadSize 25
 

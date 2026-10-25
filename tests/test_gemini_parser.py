@@ -1,15 +1,10 @@
-"""Gemini parsing & retrieval tests based on representative responses (no network)."""
+"""Gemini response parsing tests based on representative responses (no network)."""
 
 import pytest
 
 from src.content_parser import detect_platform, detect_video, parse_gemini_response
-from src.gemini_parser import (
-    GeminiRetrievalError, extract_share_id, extract_text_from_html, fetch_shared_conversation,
-    validate_share_url,
-)
 from src.mock_data import SAMPLE_GEMINI_TEXT, build_records
 from src.models import Platform
-from src.validation import validate_gemini_url, validate_sources
 
 MARKDOWN_RESPONSE = """Here is the content for your videos! 🎉
 
@@ -198,109 +193,56 @@ def test_results_feed_caption_matching():
     assert recs[0].content[Platform.INSTAGRAM].cover_title
 
 
-# ---------------- retrieval
-class Resp:
-    def __init__(self, status, text="", url="https://gemini.google.com/share/abc123"):
-        self.status_code, self.text, self.url = status, text, url
+# ---------------- PDF upload
+def _pdf(text: str) -> bytes:
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_textbox(pymupdf.Rect(36, 36, 560, 800), text, fontsize=9)
+    raw = doc.tobytes()
+    doc.close()
+    return raw
 
 
-SHARE = "https://gemini.google.com/share/abc123def"
+def test_pdf_text_extracted_and_parsed():
+    from src.pdf_extract import extract_pdf_text
+    text = ("Video 1\nINSTAGRAM REELS\nCaption:\nKurti under 999\nSave karo\n"
+            "Hashtags: #DailyFinds #Kurti\nFACEBOOK REELS\nDescription: Budget kurti\n"
+            "Hashtags: #IndianFashion\n")
+    out = extract_pdf_text(_pdf(text))
+    assert "INSTAGRAM REELS" in out and "\n" in out
+    r = parse_gemini_response(out)
+    v = r.content["Video 1"]
+    assert v[Platform.INSTAGRAM].caption == "Kurti under 999\nSave karo"
+    assert v[Platform.INSTAGRAM].hashtags == "#DailyFinds #Kurti"
+    assert v[Platform.FACEBOOK].description == "Budget kurti"
 
 
-def test_validate_share_url():
-    assert validate_share_url(SHARE) == SHARE
-    with pytest.raises(GeminiRetrievalError, match="private"):
-        validate_share_url("https://gemini.google.com/app/abc123")
-    with pytest.raises(GeminiRetrievalError):
-        validate_share_url("https://example.com/x")
-
-
-NEW_SHARE = "https://share.gemini.google/O06TBoSPT1GT"
-
-
-@pytest.mark.parametrize("url, cid", [
-    (SHARE, "abc123def"),
-    (NEW_SHARE, "O06TBoSPT1GT"),
-    (NEW_SHARE + "/", "O06TBoSPT1GT"),
-    ("  https://gemini.google.com/share/abc123def?hl=en  ", "abc123def"),
+@pytest.mark.parametrize("raw, msg", [
+    (b"", "empty"), (b"hello world", "not a PDF"), (b"%PDF-1.7\ngarbage", "corrupted"),
 ])
-def test_both_share_formats_accepted_and_id_extracted(url, cid):
-    assert validate_share_url(url) == url.strip()
-    assert extract_share_id(url) == cid
-    assert validate_gemini_url(url) is None
-    assert not validate_sources("https://drive.google.com/drive/folders/1AbCdEfGhIjKl", url,
-                                False, False)
+def test_invalid_pdfs_give_helpful_errors(raw, msg):
+    from src.pdf_extract import PdfExtractionError, extract_pdf_text
+    pytest.importorskip("pymupdf")
+    with pytest.raises(PdfExtractionError, match=msg):
+        extract_pdf_text(raw)
 
 
-@pytest.mark.parametrize("bad", [
-    "https://example.com/x", "http://share.gemini.google/O06TBoSPT1GT",
-    "https://share.gemini.google/", "https://share.gemini.google.evil.com/O06TBoSPT1GT",
-    "https://gemini.google.com/share/", "not a url",
-])
-def test_invalid_urls_give_useful_message(bad):
-    msg = validate_gemini_url(bad)
-    assert msg and "share.gemini.google" in msg and "gemini.google.com/share" in msg
+def test_pdf_without_text_reports_no_text_or_ocr():
+    from src.pdf_extract import PdfExtractionError, extract_pdf_text
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    doc.new_page()
+    raw = doc.tobytes()
+    with pytest.raises(PdfExtractionError, match="No text|OCR"):
+        extract_pdf_text(raw)
 
 
-def test_retrieval_preserves_supplied_url_format():
-    seen = []
-    page = "".join(f"<p>{line}</p>" for line in MARKDOWN_RESPONSE.splitlines())
-    fetch_shared_conversation(NEW_SHARE, http_get=lambda u, timeout: (
-        seen.append(u), Resp(200, page, url=NEW_SHARE))[1])
-    assert seen == [NEW_SHARE]
-
-
-@pytest.mark.parametrize("status, msg", [(404, "not found"), (403, "not publicly")])
-def test_new_format_inaccessible_offers_fallback(status, msg):
-    with pytest.raises(GeminiRetrievalError, match=msg) as e:
-        fetch_shared_conversation(NEW_SHARE, http_get=lambda u, timeout: Resp(status, url=NEW_SHARE))
-    assert "paste" in str(e.value) and "import" in str(e.value)
-
-
-def test_new_format_empty_page_is_not_treated_as_empty_conversation():
-    with pytest.raises(GeminiRetrievalError, match="JavaScript"):
-        fetch_shared_conversation(NEW_SHARE, http_get=lambda u, timeout: Resp(
-            200, "<html><body></body></html>", url=NEW_SHARE))
-
-
-def test_fetch_success_from_html():
-    page = "<html><body><script>var x=1;</script>" + "".join(
-        f"<p>{line}</p>" for line in MARKDOWN_RESPONSE.splitlines()) + "</body></html>"
-    text = fetch_shared_conversation(SHARE, http_get=lambda u, timeout: Resp(200, page))
-    r = parse_gemini_response(text)
-    assert r.content["reel_01.mp4"][Platform.INSTAGRAM].cover_title == "Kurti Under ₹999 🔥"
-
-
-def test_fetch_js_rendered_page_gives_fallback():
-    page = "<html><body><div id='app'></div><script>load()</script></body></html>"
-    with pytest.raises(GeminiRetrievalError, match="JavaScript") as e:
-        fetch_shared_conversation(SHARE, http_get=lambda u, timeout: Resp(200, page))
-    assert "paste" in str(e.value)
-
-
-@pytest.mark.parametrize("status, msg", [(404, "not found"), (403, "not publicly"),
-                                         (429, "rate"), (500, "HTTP 500")])
-def test_fetch_http_errors(status, msg):
-    with pytest.raises(GeminiRetrievalError, match=msg):
-        fetch_shared_conversation(SHARE, http_get=lambda u, timeout: Resp(status))
-
-
-def test_fetch_network_error_and_signin_redirect():
-    def boom(u, timeout):
-        raise ConnectionError("down")
-
-    with pytest.raises(GeminiRetrievalError, match="reach Gemini"):
-        fetch_shared_conversation(SHARE, http_get=boom)
-    with pytest.raises(GeminiRetrievalError, match="sign-in"):
-        fetch_shared_conversation(SHARE, http_get=lambda u, timeout: Resp(
-            200, "<p>login</p>", url="https://accounts.google.com/signin"))
-
-
-def test_extract_text_from_embedded_json():
-    import json
-    blob = json.dumps(MARKDOWN_RESPONSE)
-    page = f"<html><script>window.data=[{blob}];</script></html>"
-    assert "Reel Cover Title" in extract_text_from_html(page)
+def test_sources_require_pdf_or_text():
+    from src.validation import validate_sources
+    good = "https://drive.google.com/drive/folders/1AbCdEfGhIjKl"
+    assert validate_sources(good, False, False)
+    assert not validate_sources(good, True)
 
 
 # ---------------- Story 3: Instagram / Facebook extraction from numbered responses

@@ -1,7 +1,7 @@
 from src.content_parser import parse_gemini_text, parse_json
 from src.mock_data import SAMPLE_GEMINI_TEXT, load_sample_records
 from src.models import Platform, Status
-from src.validation import revalidate, validate_drive_url, validate_gemini_url, validate_sources
+from src.validation import revalidate, validate_drive_url, validate_sources
 
 
 def _records():

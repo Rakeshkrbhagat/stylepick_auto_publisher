@@ -69,29 +69,24 @@ How tokens are handled:
   asks you to reconnect.
 - **Disconnect** revokes the token.
 
-Render start command (unchanged):
-`streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+Render build command: `bash build.sh` (just `pip install -r requirements.txt`; no browser).
+Render start command:
+`streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.maxUploadSize 25`
 
-## Gemini share links
-The app tries, in order:
-1. **Direct download** of the share page. This rarely works because the page is built with
-   JavaScript.
-2. **Browser rendering:** it opens the public link in a headless Chromium, like an anonymous
-   visitor, and reads the rendered text. It never signs in or uses private endpoints.
-3. If both fail, the error lists what was tried. Paste the responses into the text box or
-   upload a `.txt` file instead.
+## Gemini Conversation PDF
+1. In Gemini, open the conversation and save it as a PDF, e.g. browser **Print → Save as
+   PDF**, or **Share & export → Export to Docs**, then in Docs **File → Download → PDF**.
+2. Upload it under **Gemini Conversation PDF** (max 25 MB). It's read in memory with PyMuPDF
+   and never stored.
+3. The app reads the YouTube Shorts / Instagram Reels / Facebook Reels sections. It shows
+   only the Instagram caption + hashtags and the Facebook description + hashtags.
 
-To enable browser rendering on Render:
-- Build command: `pip install -r requirements.txt && playwright install chromium`
-- Environment variable: `PLAYWRIGHT_BROWSERS_PATH=0` (stores the browser inside the project
-  so it's available at runtime)
+The PDF must contain **selectable text**. Scanned pages or screenshots have no text layer.
+The app tells you OCR would be needed instead of guessing. Emojis are kept when the PDF stores
+them as text. Some PDF printers turn emojis into images, so those may be missing.
 
-If Chromium can't start on the native Python runtime (missing system libraries), the error
-says so, and paste/upload still works. Set `GEMINI_BROWSER_RENDERING=off` to skip this step.
-
-Copied or rendered text may lack `Video N` headers. In that case each response, starting at
-its YouTube Shorts / Instagram section, is numbered 1, 2, 3… in order and matched to the
-filename numbers.
+If responses have no `Video N` headers, each response is numbered 1, 2, 3… in order, starting
+at its YouTube Shorts / Instagram section, and matched to the filename numbers.
 
 ## Run & test locally
 ```
@@ -110,6 +105,11 @@ python -m pytest -q
 | Folder not found / access denied | Check the URL. Make sure the connected Google account can open the folder. |
 | "Authorization expired" | Reconnect Google. Tokens are session-only, so this is expected after about 1 hour or a page reload. |
 | No supported videos | Only MP4/MOV files are listed. Other files are shown as ignored. |
-| Gemini link can't be read | Paste the response text or upload it as a file. |
+| Old env vars | `PLAYWRIGHT_BROWSERS_PATH` and `GEMINI_BROWSER_RENDERING` are no longer used and can be deleted on Render. |
+| Hindi looks broken | Some PDF printers garble Devanagari. Try another export (e.g. via Google Docs), or paste the text. |
+| No sections found | Make sure the PDF includes Gemini's answers with the Instagram Reels / Facebook Reels headings. |
+| "OCR would be required" | The PDF is scanned/screenshots. Export with selectable text, or paste the text. |
+| "password-protected" | Save an unprotected copy of the PDF. |
+| "not a PDF" / "corrupted" | Export the conversation to PDF again and re-upload. |
 | Wrong or missing match | Use the mapping panel to choose the response, confirm it or skip the video. |
 

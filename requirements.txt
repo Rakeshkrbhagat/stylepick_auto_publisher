@@ -7,7 +7,7 @@ google-auth>=2.30,<3.0
 google-auth-oauthlib>=1.2,<2.0
 google-api-python-client>=2.130,<3.0
 tzdata>=2024.1
-# Optional: renders public Gemini share pages (also run `playwright install chromium`)
-playwright>=1.44,<2
+# Extracts text (incl. Hindi/Devanagari) from the uploaded Gemini Conversation PDF
+pymupdf>=1.24,<2
 pytest>=8.0
 
