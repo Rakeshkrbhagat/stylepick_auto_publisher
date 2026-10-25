@@ -1,6 +1,6 @@
 # ReelFlow Studio
 
-Paste a Google Drive folder link and a Gemini response, and the app shows each video with its
+Paste a Google Drive folder link and upload the **Gemini Conversation PDF**, and the app shows each video with its
 matched **Instagram caption + hashtags**, **Facebook description + hashtags** (copy buttons)
 and a **Proposed Schedule Date/Time** (original date **+1 calendar day**, same time).
 
@@ -12,12 +12,8 @@ Results exist only in your browser session.
 1. **Connect Google account** (read-only Drive access) in the sidebar. You can also use
    **Load sample data** to try the app without Google.
 2. Paste the Drive folder URL. Private folders work if your Google account can read them.
-3. Give the app the Gemini response in one of these ways:
-   - a share link (`https://share.gemini.google/...` or `https://gemini.google.com/share/...`)
-   - pasted text
-   - an uploaded `.txt`, `.md` or `.json` file
-
-   If the app can't read a share link, paste the text instead.
+3. Upload the **Gemini Conversation PDF** (see below). As a fallback you can paste the
+   Gemini response text instead.
 4. The app matches each video by the number at the end of its filename. For example,
    `R-YT-10.mp4` → response 10 and `M-New-1.mov` → response 1. Numbers with several digits
    work. Duplicate numbers, missing responses and videos without a number are flagged so you
@@ -112,4 +108,3 @@ python -m pytest -q
 | "password-protected" | Save an unprotected copy of the PDF. |
 | "not a PDF" / "corrupted" | Export the conversation to PDF again and re-upload. |
 | Wrong or missing match | Use the mapping panel to choose the response, confirm it or skip the video. |
-

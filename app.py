@@ -21,13 +21,13 @@ import streamlit.components.v1 as components  # noqa: E402
 
 from src import oauth_state, scheduling  # noqa: E402
 from src.config import settings  # noqa: E402
-from src.content_parser import parse_gemini_response, parse_uploaded_result  # noqa: E402
+from src.content_parser import parse_gemini_response  # noqa: E402
 from src.drive_client import cleanup_work_dir  # noqa: E402
 from src.drive_errors import AuthError, AuthExpiredError, DriveError, NotConnectedError  # noqa: E402
-from src.gemini_parser import GeminiRetrievalError, fetch_shared_conversation  # noqa: E402
 from src.google_auth import GoogleAuthManager  # noqa: E402
 from src.matching import confirm_token, match_videos  # noqa: E402
 from src.mock_data import SAMPLE_DRIVE_URL, SAMPLE_GEMINI_TEXT  # noqa: E402
+from src.pdf_extract import PdfExtractionError, extract_pdf_text  # noqa: E402
 from src.redaction import redact  # noqa: E402
 from src.results import build_result, drive_preview_link, summary_row  # noqa: E402
 from src.ui import components as ui  # noqa: E402
@@ -39,17 +39,6 @@ from src.video_source import GoogleDriveSource, MockDriveSource, sync_records  #
 st.set_page_config(page_title=settings.app_name, page_icon=settings.app_icon, layout="wide")
 ss = st.session_state
 
-
-@st.cache_resource
-def _prepare_gemini_browser() -> bool:
-    """Once per server process: start a background Chromium download if it's missing."""
-    from src.gemini_parser import _browser_enabled, browser_ready, start_browser_install
-    if _browser_enabled() and not browser_ready():
-        start_browser_install()
-    return True
-
-
-_prepare_gemini_browser()
 
 ss.setdefault("flash", None)
 ss.setdefault("content", {})
@@ -105,8 +94,7 @@ with st.sidebar:
             ss.pop(k, None)
         st.rerun()
     import os as _os
-    st.caption(f"Build: {(_os.getenv('RENDER_GIT_COMMIT') or 'local')[:7]} · Gemini reader v2 "
-               "(browser rendering)")
+    st.caption(f"Build: {(_os.getenv('RENDER_GIT_COMMIT') or 'local')[:7]} · Gemini input: PDF upload")
 
 auth_url = None
 if settings.google_redirect_uri and not ss.use_mock_drive and ss.auth.client_configured() \
@@ -317,4 +305,3 @@ for r in results:
                 f"I scheduled this on {platform} myself", value=ss.user_confirmed.get(key, False),
                 key=f"uc_{r.video_id}_{platform}",
                 help="Your own note for this session only – the app does not check or post.")
-
