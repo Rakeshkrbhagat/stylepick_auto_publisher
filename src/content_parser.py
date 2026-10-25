@@ -161,7 +161,7 @@ def detect_platform(line: str) -> Platform | None:
         return None
     if _FIELD_RE.match(line) and not line.rstrip(" *_").endswith(":"):
         return None  # "Instagram: follow us" is text, not a header
-    m = _PLATFORM_NORM.match(_norm(line))
+    m = _PLATFORM_NORM.match(_norm(re.sub(r"\(.*?\)", " ", line)))
     if not m:
         return None
     g = [x for x in m.groups() if x][0]
@@ -213,6 +213,68 @@ def _clean(lines: list[str]) -> str:
     return text
 
 
+# ------------------------------------------------------------------ section label scanner
+# Every label Gemini uses inside a platform section, mapped to the field it fills
+# (None = a field we don't use; it only ends the previous one). Longest labels first.
+_SCAN_LABELS: list[tuple[str, str | None]] = sorted([
+    ("instagram caption", "caption"), ("reel caption", "caption"), ("caption", "caption"),
+    ("facebook caption", "caption"),
+    ("facebook reel description", "description"), ("facebook reels description", "description"),
+    ("facebook description", "description"), ("reel description", "description"),
+    ("post description", "description"), ("description", "description"),
+    ("instagram hashtags", "hashtags"), ("facebook hashtags", "hashtags"),
+    ("hashtags", "hashtags"), ("hashtag", "hashtags"),
+    ("hook", None), ("reel cover title", None), ("reel cover text", None), ("cover title", None),
+    ("seo title", None), ("title", None), ("primary seo keyword", None),
+    ("secondary seo keywords", None), ("seo keywords", None), ("keywords", None),
+    ("instagram search phrases", None), ("facebook search phrases", None),
+    ("search phrases", None), ("search intent questions", None), ("share trigger", None),
+    ("save trigger", None), ("comment trigger", None), ("on screen text", None),
+    ("optimized transcript", None), ("transcript", None), ("content category", None),
+    ("youtube tags", None), ("shorts description", None), ("optimized video topic", None),
+    ("give the affilate product name", None), ("give the affiliate product name", None),
+    ("affiliate product", None),
+], key=lambda x: -len(x[0]))
+_SCAN_RES = [
+    (re.compile(r"^\s*(?:#{1,6}\s+)?(?:[-*•]\s*)?(?:\d{1,2}\s*[.)]\s*)?[*_\s]*"
+                + r"[\s\-]*".join(map(re.escape, label.split()))
+                + r"\b[*_\s]*(?:\([^)]*\))?[*_\s]*[:：\-–—]?\s*(?P<value>.*)$", re.I), fname)
+    for label, fname in _SCAN_LABELS
+]
+_NUMBER_ONLY_RE = re.compile(r"^\s*\d{1,2}\s*[.)]?\s*$")
+
+
+def _scan_section(lines: list[str]) -> dict[str, str]:
+    """Label-based extraction for one platform section: a field runs from its label (with or
+    without number/colon, value on the same or following lines) to the next known label."""
+    found: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    cur = ""
+    for line in lines:
+        if _NUMBER_ONLY_RE.match(line):
+            continue  # list number printed on its own line
+        hit = next(((rx, f) for rx, f in _SCAN_RES if rx.match(line)), None)
+        if hit:
+            rx, fname = hit
+            if fname and fname not in found:
+                current, cur = [rx.match(line).group("value")], fname
+                found[fname] = current
+            else:
+                current = None
+            continue
+        if current is None:
+            continue
+        if _RULE_RE.match(line) or _NUMBERED_HEADING_RE.match(line) or _HEADING_RE.match(line):
+            current = None
+            continue
+        if (cur == "hashtags" and line.strip() and not line.lstrip().startswith("#")
+                and any(x.strip() for x in current)):
+            current = None
+            continue
+        current.append(line)
+    return {k: v for k, v in ((k, _clean(v)) for k, v in found.items()) if v}
+
+
 # ------------------------------------------------------------------ parser
 def parse_gemini_response(text: str) -> ParseResult:
     result = ParseResult()
@@ -222,6 +284,7 @@ def parse_gemini_response(text: str) -> ParseResult:
     platform: Platform | None = None
     current: list[str] | None = None
     cur_name = ""
+    sections: dict[str, dict[Platform, list[str]]] = {}
     orphan_lines = 0
     implicit_used = False
     implicit_keys: list[str] = []
@@ -260,7 +323,10 @@ def parse_gemini_response(text: str) -> ParseResult:
                 start_video(key)
             platform, current = p, None
             raw[video].setdefault(p, {})
+            sections.setdefault(video, {}).setdefault(p, [])
             continue
+        if platform and video:
+            sections[video][platform].append(line)
         m = _FIELD_RE.match(line) if platform else None
         fname = resolve_field(m.group("label"), platform) if m else None
         if platform and not m:
@@ -271,7 +337,7 @@ def parse_gemini_response(text: str) -> ParseResult:
                     current = None
                     continue
                 if bname:
-                    current = []
+                    current, cur_name = [], bname
                     raw[video][platform].setdefault(bname, []).append(current)
                     continue
                 if _is_caps_heading(bare.group("label")) or _NUMBERED_HEADING_RE.match(line):
@@ -311,6 +377,19 @@ def parse_gemini_response(text: str) -> ParseResult:
                         "different values); left empty – please choose and edit manually."))
                     continue
                 setattr(pc, fname, non_empty[0] if non_empty else "")
+            ambiguous = {i.field for i in result.issues
+                         if i.video == vkey and i.platform == plat.value}
+            wanted = EXPECTED_FIELDS.get(plat, [])
+            if any(not getattr(pc, f) and f not in ambiguous for f in wanted):
+                # Fallback: label scan of the section's raw lines (PDF layouts the line
+                # parser misses). Only fills fields that are still empty.
+                scanned = _scan_section(sections.get(vkey, {}).get(plat, []))
+                for f in wanted:
+                    if not getattr(pc, f) and f not in ambiguous and scanned.get(f):
+                        setattr(pc, f, scanned[f])
+                if (plat == Platform.FACEBOOK and not pc.description and not pc.caption
+                        and scanned.get("caption")):
+                    pc.caption = scanned["caption"]
             result.content[vkey][plat] = pc
         _flag_missing(result, vkey)
 

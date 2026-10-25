@@ -211,6 +211,8 @@ if submitted:
                     st.code(extracted[:4000], language=None, wrap_lines=True)
         elif result is not None:
             ss.content, ss.parse_result, ss.content_source = result.content, result, label
+            ss.pdf_text = extracted
+
             ss.match_overrides, ss.match_confirmed, ss.match_skipped = {}, set(), set()
             ss.records = []
             try:
@@ -226,6 +228,9 @@ if submitted:
 
 if ss.parse_result:
     ui.render_parse_issues(ss.parse_result.issues, ss.content_source)
+    if ss.get("pdf_text"):
+        with st.expander("Show the text extracted from the PDF (for troubleshooting)"):
+            st.code(ss.pdf_text[:20000], language=None, wrap_lines=True)
 if ss.drive_listing and ss.drive_listing.skipped:
     with st.expander(f"{len(ss.drive_listing.skipped)} unsupported file(s) ignored"):
         for s in ss.drive_listing.skipped:
